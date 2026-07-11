@@ -1,0 +1,85 @@
+[project]
+name = "unisessions"
+version = "0.1.0"
+description = "Convert AI coding CLI sessions between Codex, Claude Code, Pi, OpenCode, Devin, and Factory. SDK, CLI, and MCP chat recall."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.11"
+authors = [
+    {name = "vibheksoni"},
+]
+keywords = [
+    "ai-cli",
+    "ai-coding",
+    "coding-agent",
+    "cli-tool",
+    "developer-tools",
+    "session-converter",
+    "session-export",
+    "session-migration",
+    "session-search",
+    "chat-history",
+    "agent-memory",
+    "mcp-server",
+    "model-context-protocol",
+    "codex-cli",
+    "claude-code",
+    "opencode",
+    "pi-coding-agent",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Code Generators",
+    "Topic :: Utilities",
+]
+dependencies = [
+    "tiktoken>=0.7.0",
+]
+
+[project.optional-dependencies]
+mcp = [
+    "fastmcp>=2.0.0",
+]
+fast = [
+    "orjson>=3.10.0",
+    "google-re2>=1.1",
+]
+
+[project.urls]
+Homepage = "https://github.com/vibheksoni/session-export"
+Repository = "https://github.com/vibheksoni/session-export"
+Issues = "https://github.com/vibheksoni/session-export/issues"
+
+[project.scripts]
+unisessions-mcp = "unisessions.mcp_server:main"
+
+[tool.setuptools]
+packages = ["session_sdk", "unisessions"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_return_any = true
+warn_unused_configs = true
+disallow_any_generics = true
+disallow_subclassing_any = true
+disallow_untyped_calls = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+disallow_untyped_decorators = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_no_return = true
+warn_unreachable = true
+strict_equality = true
+
+[tool.pyright]
+typeCheckingMode = "strict"
+pythonVersion = "3.11"

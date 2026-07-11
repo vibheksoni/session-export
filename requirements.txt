@@ -1,0 +1,12 @@
+# Core dependencies (required)
+tiktoken>=0.7.0
+
+# Optional: faster JSON parsing (2x speedup, auto-detected at runtime)
+orjson>=3.10.0
+
+# Optional: faster regex search (4x speedup, auto-detected at runtime)
+google-re2>=1.1
+
+# Optional: MCP server for agent chat recall
+# Install with: pip install -r requirements-mcp.txt
+fastmcp>=2.0.0
