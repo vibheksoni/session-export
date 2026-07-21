@@ -989,9 +989,17 @@ class WindsurfStore(SessionStore):
 
     @staticmethod
     def _extract_cwd(steps: list[object]) -> str:
-        """Extract cwd from first user_input step that mentions a real file path."""
+        """Extract cwd from user_input steps that mention a real file path.
+
+        Collects all cwd candidates from PS prompts and cd commands across
+        all user_input steps, then returns the most frequently occurring one.
+        This handles sessions where the user changed directories mid-session —
+        the most common cwd is where the bulk of the work happened.
+        """
         from session_sdk.windsurf_pb import parse_step, iter_fields, VARIANT_USER_INPUT
         import re
+        from collections import Counter
+        candidates: list[str] = []
         for step_buf in steps:
             if not isinstance(step_buf, (bytes, bytearray)):
                 continue
@@ -1009,11 +1017,15 @@ class WindsurfStore(SessionStore):
                     continue
                 m = re.search(r'(?:PS )?([A-Za-z]:\\[^\s>]+)>', text)
                 if m:
-                    return m.group(1)
+                    candidates.append(m.group(1))
+                    continue
                 m = re.search(r'cd\s+[\'"]?([^\s\'"]+)', text)
                 if m and m.group(1) != "<directory>":
-                    return m.group(1)
-        return ""
+                    candidates.append(m.group(1))
+        if not candidates:
+            return ""
+        # Return the most common cwd (where the bulk of work happened)
+        return Counter(candidates).most_common(1)[0][0]
 
     @staticmethod
     def _extract_timestamp(steps: list[object]) -> str:
