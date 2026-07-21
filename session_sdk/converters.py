@@ -2152,13 +2152,40 @@ class WindsurfToPiConverter:
         return ConversionPlan(source, destination, records, (dcp_path,))
 
     def has_changes(self, session_id: str) -> bool:
-        source_path = self._windsurf_store._find_path(session_id)
-        if source_path is None:
-            return True
-        destination = self._pi_store.destination_path(self._id_factory.create(session_id), self._timestamp(""), "")
+        source = self._windsurf_store.load(session_id)
+        resolved_id = self._id_factory.create(source.session_id)
+        timestamp = self._timestamp(source.timestamp)
+        destination = self._pi_store.destination_path(resolved_id, timestamp, source.cwd)
         if not destination.exists():
+            # Check if an older export exists under a different trajectory_id
+            # (Windsurf .pb files can get updated with new trajectory_ids)
+            source_path = source.path
+            cascade_id = source_path.stem
+            pi_summaries = self._pi_store.list()
+            for s in pi_summaries:
+                if s.cwd == source.cwd and s.timestamp == timestamp:
+                    # Found a likely previous export under old ID
+                    old_records = self._count_jsonl(s.path)
+                    new_records = self._count_source_records(source)
+                    return new_records != old_records
             return True
-        return True
+        old_records = self._count_jsonl(destination)
+        new_records = self._count_source_records(source)
+        return new_records != old_records
+
+    @staticmethod
+    def _count_jsonl(path: Path) -> int:
+        from session_sdk.jsonl import JsonlFile
+        try:
+            return len(JsonlFile(path).read())
+        except Exception:
+            return -1
+
+    @staticmethod
+    def _count_source_records(source: NativeSession) -> int:
+        messages = MessageExtractor().from_windsurf(source)
+        # header + messages (compaction markers count as messages)
+        return 1 + len(messages)
 
     def write(self, plan: ConversionPlan, *, overwrite: bool = False) -> None:
         self._pi_store.write(plan.destination, plan.records, overwrite=overwrite)
