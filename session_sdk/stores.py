@@ -964,7 +964,7 @@ class WindsurfStore(SessionStore):
         session_id = str(traj.get("trajectory_id") or path.stem)
         cascade_id = str(traj.get("cascade_id") or "")
         steps = traj.get("steps") or []
-        cwd = self._extract_cwd(steps)
+        cwd = self._workspace_to_cwd(traj.get("workspace_uri")) or self._extract_cwd(steps)
         timestamp = self._extract_timestamp(steps) or ""
         return NativeSession("windsurf", session_id, cwd, timestamp, path, [{"_plaintext": plaintext, "_cascade_id": cascade_id}])
 
@@ -975,7 +975,7 @@ class WindsurfStore(SessionStore):
             traj = parse_trajectory(plaintext)
             session_id = str(traj.get("trajectory_id") or path.stem)
             steps = traj.get("steps") or []
-            cwd = self._extract_cwd(steps)
+            cwd = self._workspace_to_cwd(traj.get("workspace_uri")) or self._extract_cwd(steps)
             timestamp = self._extract_timestamp(steps) or ""
             message_count = sum(
                 1 for step_buf in steps
@@ -988,13 +988,46 @@ class WindsurfStore(SessionStore):
             return None
 
     @staticmethod
+    def _workspace_to_cwd(uri: str | None) -> str:
+        """Convert a Windsurf workspace_uri (file:// URI) to a filesystem path.
+
+        Windsurf stores workspace scope as a file:// URI, e.g.
+        ``file:///c:/Users/win/Desktop/myproject``.  This converts it to a
+        native Windows path ``C:\\Users\\win\\Desktop\\myproject``.
+
+        Some workspace URIs point to a specific file rather than a directory
+        (e.g. ``file:///c:/Users/win/Desktop/myproject/script.py``).  In that
+        case we return the parent directory.
+        """
+        if not uri:
+            return ""
+        from urllib.parse import urlparse, unquote
+        import os.path
+        parsed = urlparse(uri)
+        if parsed.scheme != "file":
+            return ""
+        path = unquote(parsed.path)
+        # On Windows, path looks like /c:/Users/win/Desktop/myproject
+        if len(path) >= 2 and path[0] == "/" and path[2] == ":":
+            path = path[1:]  # strip leading / before drive letter
+        # Convert forward slashes to OS-native separators
+        path = path.replace("/", "\\")
+        # Normalize drive letter to uppercase (file:// URIs use lowercase)
+        if len(path) >= 2 and path[1] == ":" and path[0].isalpha():
+            path = path[0].upper() + path[1:]
+        # If the URI points to a file (has an extension), use the parent dir
+        if os.path.splitext(path)[1]:
+            path = os.path.dirname(path)
+        return path
+
+    @staticmethod
     def _extract_cwd(steps: list[object]) -> str:
         """Extract cwd from user_input steps that mention a real file path.
 
-        Collects all cwd candidates from PS prompts and cd commands across
-        all user_input steps, then returns the most frequently occurring one.
-        This handles sessions where the user changed directories mid-session —
-        the most common cwd is where the bulk of the work happened.
+        This is a fallback used when the trajectory's TrajectoryScope
+        (field 7, workspace_uri) is not available.  It collects all cwd
+        candidates from PS prompts and cd commands across all user_input
+        steps, then returns the most frequently occurring one.
         """
         from session_sdk.windsurf_pb import parse_step, iter_fields, VARIANT_USER_INPUT
         import re

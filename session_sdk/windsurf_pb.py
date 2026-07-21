@@ -7,7 +7,9 @@ the plaintext is a ``CortexTrajectory`` protobuf message containing:
 - Field 1: trajectory_id (string, UUID)
 - Field 2: repeated CortexTrajectoryStep messages
 - Field 4: trajectory_type (enum)
+- Field 5: repeated parent/reference trajectory IDs (string)
 - Field 6: cascade_id (string, UUID)
+- Field 7: TrajectoryScope (message with workspace_uri, git_root_uri, branch_name)
 - Field 8: source (enum)
 
 Each ``CortexTrajectoryStep`` has:
@@ -106,6 +108,9 @@ def parse_trajectory(buf: bytes) -> dict[str, object]:
         "cascade_id": None,
         "trajectory_type": None,
         "source": None,
+        "workspace_uri": None,
+        "git_root_uri": None,
+        "branch_name": None,
         "steps": [],
     }
     for fno, wt, _off, val in iter_fields(buf):
@@ -117,6 +122,15 @@ def parse_trajectory(buf: bytes) -> dict[str, object]:
             info["trajectory_type"] = val
         elif fno == 8 and wt == 0:
             info["source"] = val
+        elif fno == 7 and wt == 2 and isinstance(val, (bytes, bytearray)):
+            # Field 7 is a wrapper containing TrajectoryScope (sub-field 1),
+            # a timestamp (sub-field 2), and a UUID (sub-field 3).
+            for sfno, swt, _soff, sval in iter_fields(val):
+                if sfno == 1 and swt == 2 and isinstance(sval, (bytes, bytearray)):
+                    scope = parse_trajectory_scope(sval)
+                    info["workspace_uri"] = scope["workspace_uri"]
+                    info["git_root_uri"] = scope["git_root_uri"]
+                    info["branch_name"] = scope["branch_name"]
         elif fno == 2 and wt == 2 and isinstance(val, (bytes, bytearray)):
             info["steps"].append(val)
     return info
@@ -130,6 +144,27 @@ VARIANT_CHECKPOINT = 30
 VARIANT_FILE_CONTEXT = 15
 VARIANT_COMMAND_RESULT = 37
 VARIANT_CONTEXT_INJECTION = 38
+
+
+def parse_trajectory_scope(buf: bytes) -> dict[str, str | None]:
+    """Parse TrajectoryScope (field 7 of CortexTrajectory).
+
+    Returns dict with workspace_uri, git_root_uri, branch_name.
+    These are file:// URIs that identify which workspace this trajectory belongs to.
+    """
+    out: dict[str, str | None] = {
+        "workspace_uri": None,
+        "git_root_uri": None,
+        "branch_name": None,
+    }
+    for fno, wt, _off, val in iter_fields(buf):
+        if fno == 1 and wt == 2 and isinstance(val, (bytes, bytearray)):
+            out["workspace_uri"] = val.decode("utf-8", errors="replace")
+        elif fno == 2 and wt == 2 and isinstance(val, (bytes, bytearray)):
+            out["git_root_uri"] = val.decode("utf-8", errors="replace")
+        elif fno == 3 and wt == 2 and isinstance(val, (bytes, bytearray)):
+            out["branch_name"] = val.decode("utf-8", errors="replace")
+    return out
 
 
 def parse_step(step_buf: bytes) -> dict[str, int | bytes | None]:
