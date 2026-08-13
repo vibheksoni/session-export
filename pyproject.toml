@@ -1,6 +1,6 @@
 [project]
 name = "unisessions"
-version = "0.1.0"
+version = "0.2.0"
 description = "Convert AI coding CLI sessions between Codex, Claude Code, Pi, OpenCode, Devin, Factory, Windsurf Cascade, and Grok Build. SDK, CLI, MCP chat recall, and trace export for fine-tuning."
 readme = "README.md"
 license = "MIT"
