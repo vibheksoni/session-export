@@ -26,6 +26,7 @@ defaults = WindowsDefaults(home=Path("/custom/home"))
 | `claude_home` | `<home>/.claude` | `CLAUDE_CONFIG_DIR` |
 | `devin_home` | Windows: `%APPDATA%/devin`, Linux: `~/.config/devin` | `DEVIN_CONFIG_DIR` |
 | `windsurf_home` | `<home>/.codeium/windsurf` | `WINDSURF_CONFIG_DIR` |
+| `grok_home` | `<home>/.grok` | `GROK_HOME` |
 | `opencode_session_dir` | `<opencode_data_home>/session-export` | -- |
 
 ### Platform Behavior
@@ -91,6 +92,32 @@ sanitize_claude_cwd("C:\\Projects\\myproject")
 ```
 
 Strips `\\?\` prefix, then replaces every non-alphanumeric character with `-`.
+
+## encode_grok_cwd_dirname
+
+Encodes a cwd path into Grok Build's sessions group directory naming.
+
+```python
+from session_sdk.paths import encode_grok_cwd_dirname
+
+encode_grok_cwd_dirname("C:\\Projects\\myproject")
+# --> "C%3A%5CProjects%5Cmyproject"
+```
+
+URL-encodes the cwd (`quote(cwd, safe="")`). When the encoded form exceeds 255 bytes it falls back to `{slug}-{blake2b-hex16}` and records the original path in a `.cwd` file inside the group, mirroring `encode_cwd_dirname` in Grok's `xai-grok-config` paths module.
+
+## decode_grok_cwd_dirname
+
+Recovers the original cwd from a Grok sessions group directory name.
+
+```python
+from session_sdk.paths import decode_grok_cwd_dirname
+
+decode_grok_cwd_dirname("C%3A%5CProjects%5Cmyproject")
+# --> "C:\\Projects\\myproject"
+```
+
+URL-decodes the name; absolute paths (starting with `/` or a drive letter) are returned directly. The slug-hash fallback never decodes to an absolute path, so a `.cwd` file in the group directory is read instead.
 
 ## opencode_id
 

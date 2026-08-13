@@ -42,7 +42,7 @@ List known chat sessions, optionally filtered by provider or project path.
 ```python
 list_chats(
     cwd: str | None = None,
-    provider: str = "all",       # "all", "codex", "pi", "opencode", "claude", "devin", "factory", "windsurf"
+    provider: str = "all",       # "all", "codex", "pi", "opencode", "claude", "devin", "factory", "windsurf", "grok"
     cwd_match: str = "exact",    # "exact", "contains", "prefix"
     limit: int = 100,
     workers: int = 1,

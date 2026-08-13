@@ -233,6 +233,48 @@ Windsurf Cascade stores sessions as AES-256-GCM encrypted protobuf `.pb` files.
 
 Where `<home>/.codeium/windsurf` is used unless `WINDSURF_CONFIG_DIR` is set.
 
+## GrokStore
+
+```python
+from session_sdk.stores import GrokStore
+
+store = GrokStore(defaults.grok_home)
+# Or with a custom session directory:
+store = GrokStore(defaults.grok_home, session_dir=Path("/custom/grok/sessions"))
+```
+
+| Method | Description |
+|---|---|
+| `list(workers=1)` | Scan `sessions/<encoded-cwd>/<session-id>/` directories for `updates.jsonl` or `summary.json`. |
+| `list_metadata(workers=1)` | Same as `list()` (metadata from `summary.json`). |
+| `load(session_id)` | Find by session directory name or `summary.json` `info.id`. |
+| `load_path(path)` | Load a Grok session directory (reads `summary.json` + `updates.jsonl`). |
+| `destination_path(session_id, cwd)` | Compute target: `sessions/<url-encoded-cwd>/<session-id>/`. |
+| `write(path, records, overwrite=False)` | Write `updates.jsonl` atomically + derived `summary.json`. |
+
+### Grok Build Format
+
+Grok Build (the `grok` CLI) stores each session as a directory:
+
+```
+<grok-home>/sessions/<url-encoded-cwd>/<session-id>/
+    summary.json      # metadata: info.id, info.cwd, timestamps, model id, message counts
+    updates.jsonl     # ACP session update envelopes, one per line
+```
+
+- **Envelope shape**: `{"timestamp", "method": "session/update", "params": {"sessionId", "update": {"sessionUpdate": "user_message_chunk" | "agent_message_chunk" | ..., "messageId", "content": {"type": "text", "text"}}}}`.
+- **CWD encoding**: group directories are the URL-encoded cwd (`encode_grok_cwd_dirname`). When the encoded form exceeds 255 bytes, a slug-hash fallback name is used and the original path is recorded in a `.cwd` file inside the group.
+- **Session IDs**: the session directory name (also `info.id` in `summary.json`).
+
+### Default Paths
+
+```
+<grok-home>/sessions/<url-encoded-cwd>/<session-id>/updates.jsonl
+<grok-home>/sessions/<url-encoded-cwd>/<session-id>/summary.json
+```
+
+Where `<grok-home>` is `$GROK_HOME` if set, otherwise `~/.grok`.
+
 ## Caching Behavior
 
 All `SessionStore` subclasses cache two data structures after the first access:

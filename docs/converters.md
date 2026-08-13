@@ -35,7 +35,7 @@ class ConversionPlan:
     services: tuple[Path, ...]  # DCP sidecar paths (Pi targets only)
 ```
 
-## All 42 Converters
+## All 56 Converters
 
 ### CodexToPiConverter
 
@@ -229,17 +229,130 @@ FactoryToWindsurfConverter(factory_store, windsurf_store, id_factory)
 
 Converts Factory JSONL transcript to Windsurf Cascade encrypted protobuf. Uses `WindsurfRecordBuilder`.
 
+### GrokToPiConverter
+
+```python
+GrokToPiConverter(grok_store, pi_store, dcp_store, id_factory)
+```
+
+Converts Grok Build ACP session directories to Pi session JSONL. Extracts text via `MessageExtractor.from_grok` and writes a DCP sidecar.
+
+### PiToGrokConverter
+
+```python
+PiToGrokConverter(pi_store, grok_store, id_factory)
+```
+
+Converts Pi session JSONL to Grok Build ACP `updates.jsonl` + `summary.json`. Uses `GrokRecordBuilder`.
+
+### GrokToCodexConverter
+
+```python
+GrokToCodexConverter(grok_store, codex_store, id_factory)
+```
+
+Converts Grok Build ACP session directories to Codex rollout JSONL. Uses `CodexRecordBuilder` (default `model_provider="session-export-import"`).
+
+### CodexToGrokConverter
+
+```python
+CodexToGrokConverter(codex_store, grok_store, id_factory)
+```
+
+Converts Codex rollout JSONL to Grok Build ACP `updates.jsonl` + `summary.json`. Uses `GrokRecordBuilder`.
+
+### GrokToOpenCodeConverter
+
+```python
+GrokToOpenCodeConverter(grok_store, opencode_store, id_factory)
+```
+
+Converts Grok Build ACP session directories to OpenCode export JSON.
+
+### OpenCodeToGrokConverter
+
+```python
+OpenCodeToGrokConverter(opencode_store, grok_store, id_factory)
+```
+
+Converts OpenCode export JSON to Grok Build ACP `updates.jsonl` + `summary.json`. Uses `GrokRecordBuilder`.
+
+### GrokToClaudeConverter
+
+```python
+GrokToClaudeConverter(grok_store, claude_store, id_factory)
+```
+
+Converts Grok Build ACP session directories to Claude Code session JSONL. Uses `ClaudeRecordBuilder`.
+
+### ClaudeToGrokConverter
+
+```python
+ClaudeToGrokConverter(claude_store, grok_store, id_factory)
+```
+
+Converts Claude Code session JSONL to Grok Build ACP `updates.jsonl` + `summary.json`. Uses `GrokRecordBuilder`.
+
+### GrokToDevinConverter
+
+```python
+GrokToDevinConverter(grok_store, devin_store, id_factory)
+```
+
+Converts Grok Build ACP session directories to Devin ATIF transcript JSON.
+
+### DevinToGrokConverter
+
+```python
+DevinToGrokConverter(devin_store, grok_store, id_factory)
+```
+
+Converts Devin ATIF transcript JSON to Grok Build ACP `updates.jsonl` + `summary.json`. Uses `GrokRecordBuilder`.
+
+### GrokToFactoryConverter
+
+```python
+GrokToFactoryConverter(grok_store, factory_store, id_factory)
+```
+
+Converts Grok Build ACP session directories to Factory JSONL transcript.
+
+### FactoryToGrokConverter
+
+```python
+FactoryToGrokConverter(factory_store, grok_store, id_factory)
+```
+
+Converts Factory JSONL transcript to Grok Build ACP `updates.jsonl` + `summary.json`. Uses `GrokRecordBuilder`.
+
+### GrokToWindsurfConverter
+
+```python
+GrokToWindsurfConverter(grok_store, windsurf_store, id_factory)
+```
+
+Converts Grok Build ACP session directories to Windsurf Cascade encrypted protobuf. Uses `WindsurfRecordBuilder`.
+
+### WindsurfToGrokConverter
+
+```python
+WindsurfToGrokConverter(windsurf_store, grok_store, id_factory)
+```
+
+Converts Windsurf Cascade encrypted protobuf to Grok Build ACP `updates.jsonl` + `summary.json`. Uses `GrokRecordBuilder`.
+
 ## Conversion Matrix
 
-| Source \ Target | Codex | Pi | OpenCode | Claude | Devin | Factory | Windsurf |
-|---|---|---|---|---|---|---|---|
-| **Codex** | -- | CodexToPi | CodexToOpenCode | CodexToClaude | CodexToDevin | CodexToFactory | CodexToWindsurf |
-| **Pi** | PiToCodex | -- | PiToOpenCode | PiToClaude | PiToDevin | PiToFactory | PiToWindsurf |
-| **OpenCode** | OpenCodeToCodex | OpenCodeToPi | -- | OpenCodeToClaude | OpenCodeToDevin | OpenCodeToFactory | OpenCodeToWindsurf |
-| **Claude** | ClaudeToCodex | ClaudeToPi | ClaudeToOpenCode | -- | ClaudeToDevin | ClaudeToFactory | ClaudeToWindsurf |
-| **Devin** | DevinToCodex | DevinToPi | DevinToOpenCode | DevinToClaude | -- | DevinToFactory | DevinToWindsurf |
-| **Factory** | FactoryToCodex | FactoryToPi | FactoryToOpenCode | FactoryToClaude | FactoryToDevin | -- | FactoryToWindsurf |
-| **Windsurf** | WindsurfToCodex | WindsurfToPi | WindsurfToOpenCode | WindsurfToClaude | WindsurfToDevin | WindsurfToFactory | -- |
+| Source \ Target | Codex | Pi | OpenCode | Claude | Devin | Factory | Windsurf | Grok |
+|---|---|---|---|---|---|---|---|---|
+| **Codex** | -- | CodexToPi | CodexToOpenCode | CodexToClaude | CodexToDevin | CodexToFactory | CodexToWindsurf | CodexToGrok |
+| **Pi** | PiToCodex | -- | PiToOpenCode | PiToClaude | PiToDevin | PiToFactory | PiToWindsurf | PiToGrok |
+| **OpenCode** | OpenCodeToCodex | OpenCodeToPi | -- | OpenCodeToClaude | OpenCodeToDevin | OpenCodeToFactory | OpenCodeToWindsurf | OpenCodeToGrok |
+| **Claude** | ClaudeToCodex | ClaudeToPi | ClaudeToOpenCode | -- | ClaudeToDevin | ClaudeToFactory | ClaudeToWindsurf | ClaudeToGrok |
+| **Devin** | DevinToCodex | DevinToPi | DevinToOpenCode | DevinToClaude | -- | DevinToFactory | DevinToWindsurf | DevinToGrok |
+| **Factory** | FactoryToCodex | FactoryToPi | FactoryToOpenCode | FactoryToClaude | FactoryToDevin | -- | FactoryToWindsurf | FactoryToGrok |
+| **Windsurf** | WindsurfToCodex | WindsurfToPi | WindsurfToOpenCode | WindsurfToClaude | WindsurfToDevin | WindsurfToFactory | -- | WindsurfToGrok |
+| **Grok** | GrokToCodex | GrokToPi | GrokToOpenCode | GrokToClaude | GrokToDevin | GrokToFactory | GrokToWindsurf | -- |
 
 ## MessageExtractor
 
@@ -252,6 +365,7 @@ All converters share a single `MessageExtractor` instance that extracts `TextMes
 | `from_opencode(session)` | OpenCode export JSON |
 | `from_claude(session)` | Claude Code session JSONL |
 | `from_windsurf(session)` | Windsurf Cascade encrypted protobuf |
+| `from_grok(session)` | Grok Build ACP `updates.jsonl` (streamed chunks grouped by `messageId`) |
 
 ### Role Mapping
 
@@ -273,6 +387,7 @@ Codex injects contextual messages (developer permissions, AGENTS.md instructions
 | OpenCode | Assistant messages with `summary=True`. `CompactionPart` entries filtered. |
 | Claude | `system` records with `subtype="compact_boundary"` or messages with `isCompactSummary=True`. |
 | Windsurf | Checkpoint steps (field 30) in `CortexTrajectory` protobuf. |
+| Grok | Compaction summaries import as `user_message_chunk` envelopes (kept readable in Grok's TUI). |
 
 ## Record Builders
 
@@ -316,6 +431,14 @@ Builds Windsurf Cascade encrypted protobuf `.pb` files with:
 - Checkpoint steps (field 30) for compaction summaries
 - AES-256-GCM encryption using the hardcoded Windsurf key
 - Requires the `cryptography` package for encryption
+
+### GrokRecordBuilder
+
+Builds Grok Build ACP session records with:
+- One `session/update` envelope per message (`{timestamp, method, params: {sessionId, update}}`)
+- Full-text `ContentChunk` payloads (`content: {type: "text", text}`) — no chunk splitting needed for import
+- A leading `{"_summary": {...}}` marker record carrying flattened metadata that `GrokStore.write` turns into `summary.json`
+- Compaction summaries imported as `user_message_chunk` so the conversation stays readable in Grok's TUI
 
 ## See Also
 

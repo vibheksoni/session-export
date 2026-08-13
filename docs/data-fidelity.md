@@ -10,7 +10,7 @@ All user and assistant text messages are extracted from the source format and wr
 
 ### Compaction Summaries
 
-Compaction markers are preserved across all seven formats. Each format's builder emits the correct compaction entry type so the target tool can reconstruct context using its native compaction logic.
+Compaction markers are preserved across all eight formats. Each format's builder emits the correct compaction entry type so the target tool can reconstruct context using its native compaction logic.
 
 | Target | Compaction Representation |
 |---|---|
@@ -19,6 +19,7 @@ Compaction markers are preserved across all seven formats. Each format's builder
 | OpenCode | User message with `CompactionPart` + assistant message with `summary=True` |
 | Claude | `type="system"` record with `subtype="compact_boundary"` |
 | Windsurf | Checkpoint step (field 30) in `CortexTrajectory` protobuf |
+| Grok | Compaction summaries import as `user_message_chunk` envelopes |
 
 ### Session Metadata
 

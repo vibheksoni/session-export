@@ -14,6 +14,7 @@ python -m unisessions list claude
 python -m unisessions list devin
 python -m unisessions list factory
 python -m unisessions list windsurf
+python -m unisessions list grok
 ```
 
 Output is tab-separated: provider, session ID, timestamp, message count, cwd, file path.
@@ -107,17 +108,18 @@ On a 20-session corpus, cold refresh takes ~39-49 seconds. Warm search returns i
 
 ## All Conversion Commands
 
-There are 42 single-session conversion commands, one for each ordered pair of tools:
+There are 56 single-session conversion commands, one for each ordered pair of tools:
 
 | Source | Targets |
 |---|---|
-| Codex | pi, opencode, claude, devin, factory, windsurf |
-| Pi | codex, opencode, claude, devin, factory, windsurf |
-| OpenCode | codex, pi, claude, devin, factory, windsurf |
-| Claude | pi, codex, opencode, devin, factory, windsurf |
-| Devin | pi, codex, opencode, claude, factory, windsurf |
-| Factory | pi, codex, opencode, claude, devin, windsurf |
-| Windsurf | pi, codex, opencode, claude, devin, factory |
+| Codex | pi, opencode, claude, devin, factory, windsurf, grok |
+| Pi | codex, opencode, claude, devin, factory, windsurf, grok |
+| OpenCode | codex, pi, claude, devin, factory, windsurf, grok |
+| Claude | pi, codex, opencode, devin, factory, windsurf, grok |
+| Devin | pi, codex, opencode, claude, factory, windsurf, grok |
+| Factory | pi, codex, opencode, claude, devin, windsurf, grok |
+| Windsurf | pi, codex, opencode, claude, devin, factory, grok |
+| Grok | pi, codex, opencode, claude, devin, factory, windsurf |
 
 ```bash
 python -m unisessions <source>-to-<target> <session-id> --write

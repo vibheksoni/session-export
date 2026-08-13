@@ -51,6 +51,7 @@ python -m unisessions list claude
 python -m unisessions list devin
 python -m unisessions list factory
 python -m unisessions list windsurf
+python -m unisessions list grok
 ```
 
 Each command should print a tab-separated list of sessions or "no sessions found."

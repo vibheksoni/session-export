@@ -1108,6 +1108,166 @@ class WindsurfTests(unittest.TestCase):
             self.assertTrue(all(s.provider == "windsurf" for s in summaries))
 
 
+class GrokTests(unittest.TestCase):
+    """Grok Build provider tests: ACP updates.jsonl extraction + builder + store."""
+
+    @staticmethod
+    def _envelope(update_type: str, text: str, message_id: str, ts: int = 1776873454) -> dict:
+        return {
+            "timestamp": ts,
+            "method": "session/update",
+            "params": {
+                "sessionId": "grok-session-001",
+                "update": {
+                    "sessionUpdate": update_type,
+                    "messageId": message_id,
+                    "content": {"type": "text", "text": text},
+                },
+            },
+        }
+
+    def test_grok_session_extraction(self) -> None:
+        with tempfile.TemporaryDirectory() as root_name:
+            root = Path(root_name)
+            session_dir = root / "sessions" / "C%3A%5Ctest%5Cproject" / "grok-session-001"
+            session_dir.mkdir(parents=True)
+            from session_sdk.jsonl import JsonlFile
+            records = [
+                self._envelope("user_message_chunk", "Hello", "m1", 1776873454),
+                self._envelope("user_message_chunk", " there", "m1", 1776873455),
+                self._envelope("agent_message_chunk", "Hi!", "m2", 1776873456),
+                self._envelope("agent_thought_chunk", "internal reasoning", "m3", 1776873457),
+                self._envelope("tool_call", "read_file", "t1", 1776873458),
+            ]
+            JsonlFile(session_dir / "updates.jsonl").write(records, overwrite=True)
+
+            from session_sdk.stores import GrokStore
+            store = GrokStore(root / "")
+            session = store.load("grok-session-001")
+            self.assertEqual(session.provider, "grok")
+            self.assertEqual(session.session_id, "grok-session-001")
+            self.assertEqual(session.cwd, r"C:\test\project")
+
+            from session_sdk.converters import MessageExtractor
+            messages = MessageExtractor().from_grok(session)
+            self.assertEqual(len(messages), 2)  # user (merged) + assistant; thought/tool skipped
+            self.assertEqual(messages[0].role, "user")
+            self.assertEqual(messages[0].text, "Hello there")  # chunks merged
+            self.assertEqual(messages[1].role, "assistant")
+            self.assertEqual(messages[1].text, "Hi!")
+
+    def test_grok_to_pi_conversion(self) -> None:
+        with tempfile.TemporaryDirectory() as root_name:
+            root = Path(root_name)
+            session_dir = root / "sessions" / "C%3A%5Ctest%5Cproject" / "grok-session-002"
+            session_dir.mkdir(parents=True)
+            from session_sdk.jsonl import JsonlFile
+            records = [
+                self._envelope("user_message_chunk", "Hello assistant", "m1"),
+                self._envelope("agent_message_chunk", "Hello user", "m2"),
+            ]
+            JsonlFile(session_dir / "updates.jsonl").write(records, overwrite=True)
+
+            from session_sdk.stores import GrokStore, PiStore, PiDcpStore
+            from session_sdk.converters import GrokToPiConverter
+            grok_store = GrokStore(root / "")
+            pi_store = PiStore(root / ".pi" / "agent")
+            dcp_store = PiDcpStore(root / ".pi-dcp")
+            factory = SessionIdFactory(preserve_ids=True)
+            converter = GrokToPiConverter(grok_store, pi_store, dcp_store, factory)
+            plan = converter.plan("grok-session-002")
+            self.assertEqual(plan.source.provider, "grok")
+            self.assertEqual(len(plan.records), 3)  # header + 2 messages
+            self.assertEqual(plan.records[0]["type"], "session")
+            self.assertEqual(plan.records[1]["type"], "message")
+            self.assertEqual(plan.records[1]["message"]["role"], "user")
+            self.assertEqual(plan.records[2]["message"]["role"], "assistant")
+            converter.write(plan, overwrite=True)
+            self.assertTrue(plan.destination.exists())
+            self.assertTrue(plan.services[0].exists())
+
+    def test_grok_store_roundtrip(self) -> None:
+        with tempfile.TemporaryDirectory() as root_name:
+            root = Path(root_name)
+            grok_home = root / ".grok"
+            from session_sdk.stores import GrokStore, PiStore, PiDcpStore
+            from session_sdk.converters import PiToGrokConverter, PiRecordBuilder
+            from session_sdk.paths import encode_grok_cwd_dirname
+
+            pi_store = PiStore(root / ".pi" / "agent")
+            dcp_store = PiDcpStore(root / ".pi-dcp")
+            builder = PiRecordBuilder()
+            records = builder.build(
+                "pi-src-001",
+                r"C:\test\project",
+                "2026-07-01T15:00:00Z",
+                [
+                    TextMessage("user", "Hello grok", "2026-07-01T15:00:01Z"),
+                    TextMessage("assistant", "Hello pi user", "2026-07-01T15:00:02Z"),
+                ],
+            )
+            pi_path = pi_store.destination_path("pi-src-001", "2026-07-01T15:00:00Z", r"C:\test\project")
+            pi_store.write(pi_path, records, overwrite=True)
+
+            grok_store = GrokStore(grok_home)
+            converter = PiToGrokConverter(pi_store, grok_store, SessionIdFactory(preserve_ids=True))
+            plan = converter.plan("pi-src-001")
+            self.assertEqual(plan.destination.name, "pi-src-001")
+            self.assertEqual(plan.destination.parent.name, encode_grok_cwd_dirname(r"C:\test\project"))
+            converter.write(plan, overwrite=True)
+
+            session = grok_store.load("pi-src-001")
+            self.assertEqual(session.provider, "grok")
+            self.assertEqual(session.cwd, r"C:\test\project")
+            from session_sdk.converters import MessageExtractor
+            messages = MessageExtractor().from_grok(session)
+            self.assertEqual(len(messages), 2)
+            self.assertEqual(messages[0].text, "Hello grok")
+            self.assertEqual(messages[1].text, "Hello pi user")
+
+            summaries = grok_store.list()
+            self.assertEqual(len(summaries), 1)
+            self.assertEqual(summaries[0].session_id, "pi-src-001")
+
+    def test_grok_list_sessions(self) -> None:
+        with tempfile.TemporaryDirectory() as root_name:
+            root = Path(root_name)
+            grok_home = root / ".grok"
+            from session_sdk.jsonl import JsonlFile
+            from urllib.parse import quote
+            for i, cwd in enumerate((r"C:\test\a", r"D:\test\b")):
+                encoded = quote(cwd, safe="")
+                session_dir = grok_home / "sessions" / encoded / f"grok-list-{i}"
+                session_dir.mkdir(parents=True)
+                JsonlFile(session_dir / "updates.jsonl").write(
+                    [self._envelope("user_message_chunk", f"msg {i}", f"m{i}")], overwrite=True
+                )
+                import json as _json
+                (session_dir / "summary.json").write_text(
+                    _json.dumps({
+                        "info": {"id": f"grok-list-{i}", "cwd": cwd},
+                        "session_summary": f"Session {i}",
+                        "created_at": "2026-07-01T15:00:00Z",
+                        "updated_at": "2026-07-01T15:00:00Z",
+                        "num_messages": 1,
+                        "num_chat_messages": 1,
+                        "current_model_id": "grok-4.6",
+                        "agent_name": "general-purpose",
+                    }),
+                    encoding="utf-8",
+                )
+
+            from session_sdk.stores import GrokStore
+            store = GrokStore(grok_home)
+            summaries = store.list()
+            self.assertEqual(len(summaries), 2)
+            ids = {s.session_id for s in summaries}
+            self.assertEqual(ids, {"grok-list-0", "grok-list-1"})
+            cwds = {s.cwd for s in summaries}
+            self.assertEqual(cwds, {r"C:\test\a", r"D:\test\b"})
+            self.assertTrue(all(s.provider == "grok" for s in summaries))
+
+
 class TraceTests(unittest.TestCase):
     def _make_messages(self) -> list[TextMessage]:
         return [

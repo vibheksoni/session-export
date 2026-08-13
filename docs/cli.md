@@ -14,14 +14,14 @@ python -m unisessions list <provider> [--workers N]
 
 | Argument | Description |
 |---|---|
-| `provider` | Required. One of `codex`, `pi`, `opencode`, `claude`, `devin`, `factory`, `windsurf`. |
+| `provider` | Required. One of `codex`, `pi`, `opencode`, `claude`, `devin`, `factory`, `windsurf`, `grok`. |
 | `--workers N` | Parallel listing workers (default: 1). |
 
 Output is tab-separated: provider, session ID, timestamp, message count, cwd, file path.
 
 ### Single-Session Conversion
 
-42 conversion commands, one for each ordered pair of tools:
+56 conversion commands, one for each ordered pair of tools:
 
 ```bash
 python -m unisessions <source>-to-<target> <session-id> [flags]
@@ -34,26 +34,31 @@ python -m unisessions <source>-to-<target> <session-id> [flags]
 | `codex-to-claude` | Codex | Claude Code |
 | `codex-to-devin` | Codex | Devin |
 | `codex-to-windsurf` | Codex | Windsurf |
+| `codex-to-factory` | Codex | Factory |
 | `pi-to-codex` | Pi | Codex |
 | `pi-to-opencode` | Pi | OpenCode |
 | `pi-to-claude` | Pi | Claude Code |
 | `pi-to-devin` | Pi | Devin |
 | `pi-to-windsurf` | Pi | Windsurf |
+| `pi-to-factory` | Pi | Factory |
 | `opencode-to-codex` | OpenCode | Codex |
 | `opencode-to-pi` | OpenCode | Pi |
 | `opencode-to-claude` | OpenCode | Claude Code |
 | `opencode-to-devin` | OpenCode | Devin |
 | `opencode-to-windsurf` | OpenCode | Windsurf |
+| `opencode-to-factory` | OpenCode | Factory |
 | `claude-to-pi` | Claude Code | Pi |
 | `claude-to-codex` | Claude Code | Codex |
 | `claude-to-opencode` | Claude Code | OpenCode |
 | `claude-to-devin` | Claude Code | Devin |
 | `claude-to-windsurf` | Claude Code | Windsurf |
+| `claude-to-factory` | Claude Code | Factory |
 | `devin-to-pi` | Devin | Pi |
 | `devin-to-codex` | Devin | Codex |
 | `devin-to-opencode` | Devin | OpenCode |
 | `devin-to-claude` | Devin | Claude Code |
 | `devin-to-windsurf` | Devin | Windsurf |
+| `devin-to-factory` | Devin | Factory |
 | `windsurf-to-pi` | Windsurf | Pi |
 | `windsurf-to-codex` | Windsurf | Codex |
 | `windsurf-to-opencode` | Windsurf | OpenCode |
@@ -66,6 +71,20 @@ python -m unisessions <source>-to-<target> <session-id> [flags]
 | `factory-to-claude` | Factory | Claude Code |
 | `factory-to-devin` | Factory | Devin |
 | `factory-to-windsurf` | Factory | Windsurf |
+| `grok-to-pi` | Grok Build | Pi |
+| `pi-to-grok` | Pi | Grok Build |
+| `grok-to-codex` | Grok Build | Codex |
+| `codex-to-grok` | Codex | Grok Build |
+| `grok-to-opencode` | Grok Build | OpenCode |
+| `opencode-to-grok` | OpenCode | Grok Build |
+| `grok-to-claude` | Grok Build | Claude Code |
+| `claude-to-grok` | Claude Code | Grok Build |
+| `grok-to-devin` | Grok Build | Devin |
+| `devin-to-grok` | Devin | Grok Build |
+| `grok-to-factory` | Grok Build | Factory |
+| `factory-to-grok` | Factory | Grok Build |
+| `grok-to-windsurf` | Grok Build | Windsurf |
+| `windsurf-to-grok` | Windsurf | Grok Build |
 
 #### Flags
 
@@ -90,12 +109,12 @@ python -m unisessions codex-to-pi-all [--write] [--workers N] [--on-conflict MOD
 Bulk export all Codex sessions to one or more targets.
 
 ```bash
-python -m unisessions export-all --targets pi opencode claude devin factory windsurf [--write] [--workers N] [--on-conflict MODE]
+python -m unisessions export-all --targets pi opencode claude devin factory windsurf grok [--write] [--workers N] [--on-conflict MODE]
 ```
 
 | Flag | Description |
 |---|---|
-| `--targets {pi,opencode,claude,devin,factory,windsurf} [...]` | Target formats. Default: `pi`. |
+| `--targets {pi,opencode,claude,devin,factory,windsurf,grok} [...]` | Target formats. Default: `pi`. |
 | `--write` | Write converted sessions. Without this, prints a dry-run summary. |
 | `--workers N` | Parallel workers (default: 8). |
 | `--overwrite` | Alias for `--on-conflict overwrite`. |
@@ -112,7 +131,7 @@ python -m unisessions to-trace <provider> <session-id> --format <format> [--writ
 
 | Argument | Description |
 |---|---|
-| `provider` | Source provider: `codex`, `pi`, `opencode`, `claude`, `devin`, `factory`, `windsurf`. |
+| `provider` | Source provider: `codex`, `pi`, `opencode`, `claude`, `devin`, `factory`, `windsurf`, `grok`. |
 | `session_id` | Session ID to export. |
 | `--format` | Trace format: `sts` (default), `openai`, `sharegpt`. |
 | `--output`, `-o` | Output file path (required with `--write`). |
@@ -156,6 +175,8 @@ All commands accept these flags to override system default paths:
 | `--devin-session-dir` | `<devin-home>/cli/transcripts` | Root containing Devin transcript JSON files. |
 | `--windsurf-home` | `<home>/.codeium/windsurf` | Windsurf home root. |
 | `--windsurf-session-dir` | `<windsurf-home>/cascade` | Root containing Windsurf Cascade `.pb` files. |
+| `--grok-home` | `$GROK_HOME` or `<home>/.grok` | Grok Build home root. |
+| `--grok-session-dir` | `<grok-home>/sessions` | Root containing Grok session directories (each with `updates.jsonl` + `summary.json`). |
 
 When a session directory override is provided, the store scans that directory directly instead of the tool's default location. This is useful for testing, custom installations, or working with exported session archives.
 

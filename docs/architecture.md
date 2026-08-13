@@ -6,20 +6,20 @@
 session-export/
   session_sdk/          # Library package (no CLI dependencies)
     __init__.py         # Public API surface
-    converters.py       # 42 converters, MessageExtractor, 6 record builders
+    converters.py       # 56 converters, MessageExtractor, 7 record builders
     traces.py           # STS, OpenAI, ShareGPT trace format builders
     json_types.py       # Safe JSON type guards and coercion
     jsonl.py            # JSONL read/write helpers (orjson with stdlib fallback)
     models.py           # SessionSummary, TextMessage, NativeSession, ConversionPlan
     paths.py            # WindowsDefaults, SessionIdFactory, encoding helpers
     search.py           # SessionSearchEngine, SessionSearchIndex, ChatSearchResult
-    stores.py           # CodexStore, PiStore, OpenCodeStore, ClaudeStore, DevinStore, FactoryStore, WindsurfStore, PiDcpStore
+    stores.py           # CodexStore, PiStore, OpenCodeStore, ClaudeStore, DevinStore, FactoryStore, WindsurfStore, GrokStore, PiDcpStore
   unisessions/          # CLI + MCP server package
     __main__.py         # CLI entry point
     cli.py              # CliApp with all commands and flags
     mcp_server.py       # FastMCP stdio/http/sse server
   tests/
-    test_conversion.py  # 32 tests
+    test_conversion.py  # 36 tests
 ```
 
 ## Dependency Direction
@@ -78,7 +78,7 @@ unisessions/mcp_server --> paths, search, stores
 2. Creates converter instances once (reused across sessions)
 3. ThreadPoolExecutor submits convert_one(summary) per session
 4. Each convert_one:
-   a. For each target (pi, opencode, claude, devin, factory, windsurf):
+   a. For each target (pi, opencode, claude, devin, factory, windsurf, grok):
       - Check conflict mode (skip/overwrite/fork/update)
       - plan() or plan(target_id=new_uuid) for fork
       - write(plan, overwrite=True)
@@ -106,7 +106,7 @@ This tool performs **text-history conversions**, not full behavioral state repla
 
 ## Compaction Handling
 
-Compaction markers are preserved across all seven formats. The internal representation is `TextMessage(role="user", is_compaction=True)`.
+Compaction markers are preserved across all eight formats. The internal representation is `TextMessage(role="user", is_compaction=True)`.
 
 | Target Format | Compaction Emission |
 |---|---|
@@ -115,6 +115,7 @@ Compaction markers are preserved across all seven formats. The internal represen
 | OpenCode | User message with `CompactionPart` + assistant message with `summary=True` |
 | Claude | `type="system"` record with `subtype="compact_boundary"` |
 | Windsurf | Checkpoint step (field 30) in `CortexTrajectory` protobuf |
+| Grok | Compaction summaries import as `user_message_chunk` envelopes |
 
 Source extractors handle compaction from each format:
 
@@ -125,6 +126,7 @@ Source extractors handle compaction from each format:
 | OpenCode | Assistant messages with `summary=True`; `CompactionPart` filtered |
 | Claude | `system` records with `subtype="compact_boundary"` or `isCompactSummary=True` |
 | Windsurf | Checkpoint steps (field 30) in `CortexTrajectory` protobuf |
+| Grok | `session/update` envelopes with `sessionUpdate` of `user_message_chunk`/`agent_message_chunk` (streamed chunks grouped by `messageId`) |
 
 ## Contextual Message Handling
 

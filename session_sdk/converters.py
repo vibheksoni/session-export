@@ -8,7 +8,7 @@ from session_sdk.json_types import JsonObject, as_list, as_object, as_str, seque
 from session_sdk.jsonl import _loads
 from session_sdk.models import ConversionPlan, NativeSession, TextMessage
 from session_sdk.paths import SessionIdFactory, iso_to_epoch_ms, opencode_id, opencode_slug
-from session_sdk.stores import ClaudeStore, CodexStore, DevinStore, FactoryStore, OpenCodeStore, PiDcpStore, PiStore, WindsurfStore
+from session_sdk.stores import ClaudeStore, CodexStore, DevinStore, FactoryStore, GrokStore, OpenCodeStore, PiDcpStore, PiStore, WindsurfStore
 
 
 def _count_jsonl_records(path: Path) -> int:
@@ -388,6 +388,79 @@ class MessageExtractor:
                             break
                 if text:
                     messages.append(TextMessage("user", text, timestamp, is_contextual=True))
+        return messages
+
+    def from_grok(self, session: NativeSession) -> list[TextMessage]:
+        """Extract text history from a Grok Build session.
+
+        Grok stores sessions as ``updates.jsonl``: one ACP session update
+        envelope per line with shape
+        ``{"timestamp", "method", "params": {"sessionId", "update"}}``.
+        ``user_message_chunk`` / ``agent_message_chunk`` update events carry
+        ``ContentChunk`` payloads with ``content: {type: "text", text}`` and
+        a ``messageId`` used to group streamed chunks into one message.
+        ``agent_thought_chunk`` (internal reasoning) is skipped, as are
+        tool_call / tool_call_update events, matching the text-history
+        contract used by every other provider.
+        """
+        messages: list[TextMessage] = []
+        # Pending streamed chunk aggregation keyed by messageId.
+        pending: dict[str, dict[str, object]] = {}
+
+        def flush(message_id: str) -> None:
+            item = pending.pop(message_id, None)
+            if item is None:
+                return
+            text = str(item.get("text") or "")
+            if not text:
+                return
+            role = str(item.get("role") or "user")
+            timestamp = str(item.get("timestamp") or session.timestamp)
+            contextual = self._is_contextual(text)
+            if role == "assistant":
+                messages.append(TextMessage("assistant", text, timestamp, provider="grok"))
+            else:
+                messages.append(TextMessage("user", text, timestamp, is_contextual=contextual))
+
+        for record in session.records:
+            if not isinstance(record, dict):
+                continue
+            method = string_value(record, "method") or ""
+            if method not in ("session/update", "_x.ai/session/update"):
+                continue
+            params = as_object(record.get("params")) or {}
+            update = as_object(params.get("update")) or {}
+            utype = string_value(update, "sessionUpdate") or ""
+            if utype not in ("user_message_chunk", "agent_message_chunk", "agent_thought_chunk"):
+                # tool_call, tool_call_update, plan, session_info_update,
+                # usage_update, etc. are not text history.
+                continue
+            message_id = string_value(update, "messageId") or ""
+            content = as_object(update.get("content")) or {}
+            ctype = string_value(content, "type") or ""
+            text = string_value(content, "text") or ""
+            if not text or ctype != "text":
+                continue
+            if utype == "agent_thought_chunk":
+                continue
+            role = "assistant" if utype == "agent_message_chunk" else "user"
+            timestamp = str(record.get("timestamp") or "") or session.timestamp
+            if not message_id:
+                # No message id: emit directly.
+                contextual = self._is_contextual(text)
+                if role == "assistant":
+                    messages.append(TextMessage("assistant", text, timestamp, provider="grok"))
+                else:
+                    messages.append(TextMessage("user", text, timestamp, is_contextual=contextual))
+                continue
+            if message_id in pending:
+                # Same message continues streaming: append the chunk text.
+                pending[message_id]["text"] = str(pending[message_id].get("text") or "") + text
+                continue
+            pending[message_id] = {"role": role, "text": text, "timestamp": timestamp}
+        # Flush remaining pending chunks in insertion order.
+        for message_id in list(pending.keys()):
+            flush(message_id)
         return messages
 
     _WINDSURF_CONTEXTUAL_MARKERS: tuple[str, ...] = (
@@ -814,6 +887,88 @@ class ClaudeRecordBuilder:
                 "version": version,
             })
             parent_uuid = entry_uuid
+        return records
+
+
+def _count_grok_records(session_dir: Path) -> int:
+    """Count ACP update envelopes in a Grok session dir (updates.jsonl)."""
+    from session_sdk.jsonl import JsonlFile
+    try:
+        updates = Path(session_dir) / "updates.jsonl"
+        if not updates.is_file():
+            return -1
+        records = JsonlFile(updates).read()
+        return sum(1 for r in records if not (isinstance(r, dict) and "_summary" in r))
+    except Exception:
+        return -1
+
+
+class GrokRecordBuilder:
+    """Build Grok Build session records: ACP update envelopes + summary.
+
+    Each message becomes one ``session/update`` envelope with a full-text
+    ``ContentChunk`` (no chunk splitting needed for import).  A leading
+    ``{"_summary": {...}}`` marker record carries the flattened summary
+    metadata that ``GrokStore.write`` turns into ``summary.json``.
+    """
+
+    def build(
+        self,
+        session_id: str,
+        cwd: str,
+        timestamp: str,
+        messages: list[TextMessage],
+        model_id: str = "grok-4.6",
+        agent_name: str = "general-purpose",
+    ) -> list[JsonObject]:
+        from session_sdk.paths import iso_to_epoch_ms
+        from uuid import uuid4
+
+        epoch_base = iso_to_epoch_ms(timestamp) // 1000 if timestamp else 0
+        records: list[JsonObject] = []
+        user_count = 0
+        assistant_count = 0
+        for index, message in enumerate(messages):
+            if message.is_contextual:
+                continue
+            if message.is_compaction:
+                # Compaction summaries import as user messages so the
+                # conversation stays readable in Grok's TUI.
+                role_chunk = "user_message_chunk"
+                user_count += 1
+            elif message.role == "assistant":
+                role_chunk = "agent_message_chunk"
+                assistant_count += 1
+            else:
+                role_chunk = "user_message_chunk"
+                user_count += 1
+            msg_timestamp = int(iso_to_epoch_ms(message.timestamp or timestamp) // 1000) or (epoch_base + index + 1)
+            records.append({
+                "timestamp": msg_timestamp,
+                "method": "session/update",
+                "params": {
+                    "sessionId": session_id,
+                    "update": {
+                        "sessionUpdate": role_chunk,
+                        "messageId": str(uuid4()),
+                        "content": {"type": "text", "text": message.text},
+                    },
+                },
+            })
+        records.insert(0, {
+            "_summary": {
+                "id": session_id,
+                "cwd": cwd,
+                "title": "",
+                "created_at": timestamp,
+                "updated_at": timestamp,
+                "num_messages": user_count + assistant_count,
+                "num_chat_messages": user_count + assistant_count,
+                "current_model_id": model_id,
+                "parent_session_id": "",
+                "agent_name": agent_name,
+            }
+        })
         return records
 
 
@@ -2583,6 +2738,518 @@ class FactoryToWindsurfConverter:
 
     def write(self, plan: ConversionPlan, *, overwrite: bool = False) -> None:
         self._windsurf_store.write(plan.destination, plan.records, overwrite=overwrite)
+
+    @staticmethod
+    def _timestamp(timestamp: str) -> str:
+        if timestamp:
+            return timestamp
+        return datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+class GrokToPiConverter:
+    def __init__(self, grok_store: GrokStore, pi_store: PiStore, dcp_store: PiDcpStore, id_factory: SessionIdFactory) -> None:
+        self._grok_store = grok_store
+        self._pi_store = pi_store
+        self._dcp_store = dcp_store
+        self._id_factory = id_factory
+        self._extractor = MessageExtractor()
+        self._builder = PiRecordBuilder()
+
+    def plan(self, session_id: str, *, target_id: str | None = None) -> ConversionPlan:
+        source = self._grok_store.load(session_id)
+        resolved_id = target_id or self._id_factory.create(source.session_id)
+        timestamp = self._timestamp(source.timestamp)
+        messages = self._extractor.from_grok(source)
+        records = self._builder.build(resolved_id, source.cwd, timestamp, messages)
+        destination = self._pi_store.destination_path(resolved_id, timestamp, source.cwd)
+        dcp_path = self._dcp_store.destination_path(resolved_id)
+        return ConversionPlan(source, destination, records, (dcp_path,))
+
+    def has_changes(self, session_id: str) -> bool:
+        source_path = self._grok_store._find_path(session_id)
+        if source_path is None:
+            return True
+        destination = self._pi_store.destination_path(self._id_factory.create(session_id), self._timestamp(""), "")
+        if not destination.exists():
+            return True
+        return _count_grok_records(source_path) != _count_jsonl_records(destination)
+
+    def write(self, plan: ConversionPlan, *, overwrite: bool = False) -> None:
+        self._pi_store.write(plan.destination, plan.records, overwrite=overwrite)
+        for service_path in plan.services:
+            self._dcp_store.write_default(self._target_id(plan.destination), service_path, overwrite=overwrite)
+
+    @staticmethod
+    def _target_id(path: Path) -> str:
+        return path.stem.rsplit("_", 1)[-1]
+
+    @staticmethod
+    def _timestamp(timestamp: str) -> str:
+        if timestamp:
+            return timestamp
+        return datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+class PiToGrokConverter:
+    def __init__(self, pi_store: PiStore, grok_store: GrokStore, id_factory: SessionIdFactory) -> None:
+        self._pi_store = pi_store
+        self._grok_store = grok_store
+        self._id_factory = id_factory
+        self._extractor = MessageExtractor()
+        self._builder = GrokRecordBuilder()
+
+    def plan(self, session_id: str, *, target_id: str | None = None) -> ConversionPlan:
+        source = self._pi_store.load(session_id)
+        resolved_id = target_id or self._id_factory.create(source.session_id)
+        timestamp = self._timestamp(source.timestamp)
+        messages = self._extractor.from_pi(source)
+        records = self._builder.build(resolved_id, source.cwd, timestamp, messages)
+        destination = self._grok_store.destination_path(resolved_id, source.cwd)
+        return ConversionPlan(source, destination, records)
+
+    def has_changes(self, session_id: str) -> bool:
+        source_path = self._pi_store._find_path(session_id)
+        if source_path is None:
+            return True
+        destination = self._grok_store.destination_path(self._id_factory.create(session_id), "")
+        if destination.exists():
+            return _count_jsonl_records(source_path) != _count_grok_records(destination)
+        return True
+
+    def write(self, plan: ConversionPlan, *, overwrite: bool = False) -> None:
+        self._grok_store.write(plan.destination, plan.records, overwrite=overwrite)
+
+    @staticmethod
+    def _timestamp(timestamp: str) -> str:
+        if timestamp:
+            return timestamp
+        return datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+class GrokToCodexConverter:
+    def __init__(self, grok_store: GrokStore, codex_store: CodexStore, id_factory: SessionIdFactory) -> None:
+        self._grok_store = grok_store
+        self._codex_store = codex_store
+        self._id_factory = id_factory
+        self._extractor = MessageExtractor()
+        self._builder = CodexRecordBuilder()
+
+    def plan(self, session_id: str, *, target_id: str | None = None) -> ConversionPlan:
+        source = self._grok_store.load(session_id)
+        resolved_id = target_id or self._id_factory.create(source.session_id)
+        timestamp = self._timestamp(source.timestamp)
+        messages = self._extractor.from_grok(source)
+        records = self._builder.build(resolved_id, source.cwd, timestamp, messages)
+        destination = self._codex_store.destination_path(resolved_id, timestamp)
+        return ConversionPlan(source, destination, records)
+
+    def has_changes(self, session_id: str) -> bool:
+        source_path = self._grok_store._find_path(session_id)
+        if source_path is None:
+            return True
+        destination = self._codex_store.destination_path(self._id_factory.create(session_id), self._timestamp(""))
+        if not destination.exists():
+            return True
+        return _count_grok_records(source_path) != _count_jsonl_records(destination)
+
+    def write(self, plan: ConversionPlan, *, overwrite: bool = False) -> None:
+        self._codex_store.write(plan.destination, plan.records, overwrite=overwrite)
+
+    @staticmethod
+    def _timestamp(timestamp: str) -> str:
+        if timestamp:
+            return timestamp
+        return datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+class CodexToGrokConverter:
+    def __init__(self, codex_store: CodexStore, grok_store: GrokStore, id_factory: SessionIdFactory) -> None:
+        self._codex_store = codex_store
+        self._grok_store = grok_store
+        self._id_factory = id_factory
+        self._extractor = MessageExtractor()
+        self._builder = GrokRecordBuilder()
+
+    def plan(self, session_id: str, *, target_id: str | None = None) -> ConversionPlan:
+        source = self._codex_store.load(session_id)
+        resolved_id = target_id or self._id_factory.create(source.session_id)
+        timestamp = self._timestamp(source.timestamp)
+        messages = self._extractor.from_codex(source)
+        records = self._builder.build(resolved_id, source.cwd, timestamp, messages)
+        destination = self._grok_store.destination_path(resolved_id, source.cwd)
+        return ConversionPlan(source, destination, records)
+
+    def has_changes(self, session_id: str) -> bool:
+        source_path = self._codex_store._find_path(session_id)
+        if source_path is None:
+            return True
+        destination = self._grok_store.destination_path(self._id_factory.create(session_id), "")
+        if destination.exists():
+            return _count_jsonl_records(source_path) != _count_grok_records(destination)
+        return True
+
+    def write(self, plan: ConversionPlan, *, overwrite: bool = False) -> None:
+        self._grok_store.write(plan.destination, plan.records, overwrite=overwrite)
+
+    @staticmethod
+    def _timestamp(timestamp: str) -> str:
+        if timestamp:
+            return timestamp
+        return datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+class GrokToOpenCodeConverter:
+    def __init__(self, grok_store: GrokStore, opencode_store: OpenCodeStore, id_factory: SessionIdFactory) -> None:
+        self._grok_store = grok_store
+        self._opencode_store = opencode_store
+        self._id_factory = id_factory
+        self._extractor = MessageExtractor()
+        self._builder = OpenCodeExportBuilder()
+
+    def plan(self, session_id: str, *, target_id: str | None = None) -> ConversionPlan:
+        source = self._grok_store.load(session_id)
+        resolved_id = target_id or self._id_factory.create(source.session_id)
+        timestamp = self._timestamp(source.timestamp)
+        messages = self._extractor.from_grok(source)
+        records = self._builder.build(resolved_id, source.cwd, timestamp, messages)
+        destination = self._opencode_store.destination_path(resolved_id)
+        return ConversionPlan(source, destination, records)
+
+    def has_changes(self, session_id: str) -> bool:
+        source_path = self._grok_store._find_path(session_id)
+        if source_path is None:
+            return True
+        destination = self._opencode_store.destination_path(self._id_factory.create(session_id))
+        if not destination.exists():
+            return True
+        return _count_grok_records(source_path) != _count_opencode_records(destination)
+
+    def write(self, plan: ConversionPlan, *, overwrite: bool = False) -> None:
+        self._opencode_store.write(plan.destination, plan.records, overwrite=overwrite)
+
+    @staticmethod
+    def _timestamp(timestamp: str) -> str:
+        if timestamp:
+            return timestamp
+        return datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+class OpenCodeToGrokConverter:
+    def __init__(self, opencode_store: OpenCodeStore, grok_store: GrokStore, id_factory: SessionIdFactory) -> None:
+        self._opencode_store = opencode_store
+        self._grok_store = grok_store
+        self._id_factory = id_factory
+        self._extractor = MessageExtractor()
+        self._builder = GrokRecordBuilder()
+
+    def plan(self, session_id: str, *, target_id: str | None = None) -> ConversionPlan:
+        source = self._opencode_store.load(session_id)
+        resolved_id = target_id or self._id_factory.create(source.session_id)
+        timestamp = self._timestamp(source.timestamp)
+        messages = self._extractor.from_opencode(source)
+        records = self._builder.build(resolved_id, source.cwd, timestamp, messages)
+        destination = self._grok_store.destination_path(resolved_id, source.cwd)
+        return ConversionPlan(source, destination, records)
+
+    def has_changes(self, session_id: str) -> bool:
+        source_path = self._opencode_store._find_path(session_id)
+        if source_path is None:
+            return True
+        destination = self._grok_store.destination_path(self._id_factory.create(session_id), "")
+        if destination.exists():
+            return _count_opencode_records(source_path) != _count_grok_records(destination)
+        return True
+
+    def write(self, plan: ConversionPlan, *, overwrite: bool = False) -> None:
+        self._grok_store.write(plan.destination, plan.records, overwrite=overwrite)
+
+    @staticmethod
+    def _timestamp(timestamp: str) -> str:
+        if timestamp:
+            return timestamp
+        return datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+class GrokToClaudeConverter:
+    def __init__(self, grok_store: GrokStore, claude_store: ClaudeStore, id_factory: SessionIdFactory) -> None:
+        self._grok_store = grok_store
+        self._claude_store = claude_store
+        self._id_factory = id_factory
+        self._extractor = MessageExtractor()
+        self._builder = ClaudeRecordBuilder()
+
+    def plan(self, session_id: str, *, target_id: str | None = None) -> ConversionPlan:
+        source = self._grok_store.load(session_id)
+        resolved_id = target_id or self._id_factory.create(source.session_id)
+        timestamp = self._timestamp(source.timestamp)
+        messages = self._extractor.from_grok(source)
+        records = self._builder.build(resolved_id, source.cwd, timestamp, messages)
+        destination = self._claude_store.destination_path(resolved_id, source.cwd)
+        return ConversionPlan(source, destination, records)
+
+    def has_changes(self, session_id: str) -> bool:
+        source_path = self._grok_store._find_path(session_id)
+        if source_path is None:
+            return True
+        destination = self._claude_store.destination_path(self._id_factory.create(session_id), "")
+        if not destination.exists():
+            return True
+        return _count_grok_records(source_path) != _count_jsonl_records(destination)
+
+    def write(self, plan: ConversionPlan, *, overwrite: bool = False) -> None:
+        self._claude_store.write(plan.destination, plan.records, overwrite=overwrite)
+
+    @staticmethod
+    def _timestamp(timestamp: str) -> str:
+        if timestamp:
+            return timestamp
+        return datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+class ClaudeToGrokConverter:
+    def __init__(self, claude_store: ClaudeStore, grok_store: GrokStore, id_factory: SessionIdFactory) -> None:
+        self._claude_store = claude_store
+        self._grok_store = grok_store
+        self._id_factory = id_factory
+        self._extractor = MessageExtractor()
+        self._builder = GrokRecordBuilder()
+
+    def plan(self, session_id: str, *, target_id: str | None = None) -> ConversionPlan:
+        source = self._claude_store.load(session_id)
+        resolved_id = target_id or self._id_factory.create(source.session_id)
+        timestamp = self._timestamp(source.timestamp)
+        messages = self._extractor.from_claude(source)
+        records = self._builder.build(resolved_id, source.cwd, timestamp, messages)
+        destination = self._grok_store.destination_path(resolved_id, source.cwd)
+        return ConversionPlan(source, destination, records)
+
+    def has_changes(self, session_id: str) -> bool:
+        source_path = self._claude_store._find_path(session_id)
+        if source_path is None:
+            return True
+        destination = self._grok_store.destination_path(self._id_factory.create(session_id), "")
+        if destination.exists():
+            return _count_jsonl_records(source_path) != _count_grok_records(destination)
+        return True
+
+    def write(self, plan: ConversionPlan, *, overwrite: bool = False) -> None:
+        self._grok_store.write(plan.destination, plan.records, overwrite=overwrite)
+
+    @staticmethod
+    def _timestamp(timestamp: str) -> str:
+        if timestamp:
+            return timestamp
+        return datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+class GrokToDevinConverter:
+    def __init__(self, grok_store: GrokStore, devin_store: DevinStore, id_factory: SessionIdFactory) -> None:
+        self._grok_store = grok_store
+        self._devin_store = devin_store
+        self._id_factory = id_factory
+        self._extractor = MessageExtractor()
+        self._builder = DevinRecordBuilder()
+
+    def plan(self, session_id: str, *, target_id: str | None = None) -> ConversionPlan:
+        source = self._grok_store.load(session_id)
+        resolved_id = target_id or self._id_factory.create(source.session_id)
+        timestamp = self._timestamp(source.timestamp)
+        messages = self._extractor.from_grok(source)
+        records = self._builder.build(resolved_id, source.cwd, timestamp, messages)
+        destination = self._devin_store.destination_path(resolved_id)
+        return ConversionPlan(source, destination, records)
+
+    def has_changes(self, session_id: str) -> bool:
+        source_path = self._grok_store._find_path(session_id)
+        if source_path is None:
+            return True
+        destination = self._devin_store.destination_path(self._id_factory.create(session_id))
+        if not destination.exists():
+            return True
+        return _count_grok_records(source_path) != _count_jsonl_records(destination)
+
+    def write(self, plan: ConversionPlan, *, overwrite: bool = False) -> None:
+        self._devin_store.write(plan.destination, plan.records, overwrite=overwrite)
+
+    @staticmethod
+    def _timestamp(timestamp: str) -> str:
+        if timestamp:
+            return timestamp
+        return datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+class DevinToGrokConverter:
+    def __init__(self, devin_store: DevinStore, grok_store: GrokStore, id_factory: SessionIdFactory) -> None:
+        self._devin_store = devin_store
+        self._grok_store = grok_store
+        self._id_factory = id_factory
+        self._extractor = MessageExtractor()
+        self._builder = GrokRecordBuilder()
+
+    def plan(self, session_id: str, *, target_id: str | None = None) -> ConversionPlan:
+        source = self._devin_store.load(session_id)
+        resolved_id = target_id or self._id_factory.create(source.session_id)
+        timestamp = self._timestamp(source.timestamp)
+        messages = self._extractor.from_devin(source)
+        records = self._builder.build(resolved_id, source.cwd, timestamp, messages)
+        destination = self._grok_store.destination_path(resolved_id, source.cwd)
+        return ConversionPlan(source, destination, records)
+
+    def has_changes(self, session_id: str) -> bool:
+        source_path = self._devin_store._find_path(session_id)
+        if source_path is None:
+            return True
+        destination = self._grok_store.destination_path(self._id_factory.create(session_id), "")
+        if destination.exists():
+            return _count_jsonl_records(source_path) != _count_grok_records(destination)
+        return True
+
+    def write(self, plan: ConversionPlan, *, overwrite: bool = False) -> None:
+        self._grok_store.write(plan.destination, plan.records, overwrite=overwrite)
+
+    @staticmethod
+    def _timestamp(timestamp: str) -> str:
+        if timestamp:
+            return timestamp
+        return datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+class GrokToFactoryConverter:
+    def __init__(self, grok_store: GrokStore, factory_store: FactoryStore, id_factory: SessionIdFactory) -> None:
+        self._grok_store = grok_store
+        self._factory_store = factory_store
+        self._id_factory = id_factory
+        self._extractor = MessageExtractor()
+        self._builder = FactoryRecordBuilder()
+
+    def plan(self, session_id: str, *, target_id: str | None = None) -> ConversionPlan:
+        source = self._grok_store.load(session_id)
+        resolved_id = target_id or self._id_factory.create(source.session_id)
+        timestamp = self._timestamp(source.timestamp)
+        messages = self._extractor.from_grok(source)
+        records = self._builder.build(resolved_id, source.cwd, timestamp, messages)
+        destination = self._factory_store.destination_path(resolved_id, source.cwd)
+        return ConversionPlan(source, destination, records)
+
+    def has_changes(self, session_id: str) -> bool:
+        source_path = self._grok_store._find_path(session_id)
+        if source_path is None:
+            return True
+        destination = self._factory_store.destination_path(self._id_factory.create(session_id), "")
+        if not destination.exists():
+            return True
+        return _count_grok_records(source_path) != _count_jsonl_records(destination)
+
+    def write(self, plan: ConversionPlan, *, overwrite: bool = False) -> None:
+        self._factory_store.write(plan.destination, plan.records, overwrite=overwrite)
+
+    @staticmethod
+    def _timestamp(timestamp: str) -> str:
+        if timestamp:
+            return timestamp
+        return datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+class FactoryToGrokConverter:
+    def __init__(self, factory_store: FactoryStore, grok_store: GrokStore, id_factory: SessionIdFactory) -> None:
+        self._factory_store = factory_store
+        self._grok_store = grok_store
+        self._id_factory = id_factory
+        self._extractor = MessageExtractor()
+        self._builder = GrokRecordBuilder()
+
+    def plan(self, session_id: str, *, target_id: str | None = None) -> ConversionPlan:
+        source = self._factory_store.load(session_id)
+        resolved_id = target_id or self._id_factory.create(source.session_id)
+        timestamp = self._timestamp(source.timestamp)
+        messages = self._extractor.from_factory(source)
+        records = self._builder.build(resolved_id, source.cwd, timestamp, messages)
+        destination = self._grok_store.destination_path(resolved_id, source.cwd)
+        return ConversionPlan(source, destination, records)
+
+    def has_changes(self, session_id: str) -> bool:
+        source_path = self._factory_store._find_path(session_id)
+        if source_path is None:
+            return True
+        destination = self._grok_store.destination_path(self._id_factory.create(session_id), "")
+        if destination.exists():
+            return _count_jsonl_records(source_path) != _count_grok_records(destination)
+        return True
+
+    def write(self, plan: ConversionPlan, *, overwrite: bool = False) -> None:
+        self._grok_store.write(plan.destination, plan.records, overwrite=overwrite)
+
+    @staticmethod
+    def _timestamp(timestamp: str) -> str:
+        if timestamp:
+            return timestamp
+        return datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+class GrokToWindsurfConverter:
+    def __init__(self, grok_store: GrokStore, windsurf_store: WindsurfStore, id_factory: SessionIdFactory) -> None:
+        self._grok_store = grok_store
+        self._windsurf_store = windsurf_store
+        self._id_factory = id_factory
+        self._extractor = MessageExtractor()
+        self._builder = WindsurfRecordBuilder()
+
+    def plan(self, session_id: str, *, target_id: str | None = None) -> ConversionPlan:
+        source = self._grok_store.load(session_id)
+        resolved_id = target_id or self._id_factory.create(source.session_id)
+        timestamp = self._timestamp(source.timestamp)
+        messages = self._extractor.from_grok(source)
+        records = self._builder.build(resolved_id, source.cwd, timestamp, messages)
+        destination = self._windsurf_store.destination_path(resolved_id)
+        return ConversionPlan(source, destination, records)
+
+    def has_changes(self, session_id: str) -> bool:
+        source_path = self._grok_store._find_path(session_id)
+        if source_path is None:
+            return True
+        destination = self._windsurf_store.destination_path(self._id_factory.create(session_id))
+        if not destination.exists():
+            return True
+        return _count_grok_records(source_path) != _count_jsonl_records(destination)
+
+    def write(self, plan: ConversionPlan, *, overwrite: bool = False) -> None:
+        self._windsurf_store.write(plan.destination, plan.records, overwrite=overwrite)
+
+    @staticmethod
+    def _timestamp(timestamp: str) -> str:
+        if timestamp:
+            return timestamp
+        return datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+class WindsurfToGrokConverter:
+    def __init__(self, windsurf_store: WindsurfStore, grok_store: GrokStore, id_factory: SessionIdFactory) -> None:
+        self._windsurf_store = windsurf_store
+        self._grok_store = grok_store
+        self._id_factory = id_factory
+        self._extractor = MessageExtractor()
+        self._builder = GrokRecordBuilder()
+
+    def plan(self, session_id: str, *, target_id: str | None = None) -> ConversionPlan:
+        source = self._windsurf_store.load(session_id)
+        resolved_id = target_id or self._id_factory.create(source.session_id)
+        timestamp = self._timestamp(source.timestamp)
+        messages = self._extractor.from_windsurf(source)
+        records = self._builder.build(resolved_id, source.cwd, timestamp, messages)
+        destination = self._grok_store.destination_path(resolved_id, source.cwd)
+        return ConversionPlan(source, destination, records)
+
+    def has_changes(self, session_id: str) -> bool:
+        source_path = self._windsurf_store._find_path(session_id)
+        if source_path is None:
+            return True
+        destination = self._grok_store.destination_path(self._id_factory.create(session_id), "")
+        if destination.exists():
+            return _count_jsonl_records(source_path) != _count_grok_records(destination)
+        return True
+
+    def write(self, plan: ConversionPlan, *, overwrite: bool = False) -> None:
+        self._grok_store.write(plan.destination, plan.records, overwrite=overwrite)
 
     @staticmethod
     def _timestamp(timestamp: str) -> str:

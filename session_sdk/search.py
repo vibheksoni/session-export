@@ -19,7 +19,7 @@ from session_sdk.converters import MessageExtractor
 from session_sdk.models import NativeSession, SessionSummary, TextMessage
 from session_sdk.stores import ClaudeStore, CodexStore, DevinStore, FactoryStore, OpenCodeStore, PiStore, SessionStore, WindsurfStore
 
-Provider = Literal["all", "codex", "pi", "opencode", "claude", "devin", "factory", "windsurf"]
+Provider = Literal["all", "codex", "pi", "opencode", "claude", "devin", "factory", "windsurf", "grok"]
 CwdMatch = Literal["exact", "contains", "prefix"]
 MatchMode = Literal["literal", "regex", "all_keywords", "any_keywords"]
 StalePolicy = Literal["refresh", "skip", "error"]
@@ -656,6 +656,8 @@ class SessionSearchIndex:
             return extractor.from_factory(session)
         if session.provider == "windsurf":
             return extractor.from_windsurf(session)
+        if session.provider == "grok":
+            return extractor.from_grok(session)
         return []
 
     @staticmethod
@@ -824,7 +826,7 @@ class SessionSearchIndex:
 
 
 class SessionSearchEngine:
-    def __init__(self, codex: CodexStore, pi: PiStore, opencode: OpenCodeStore, index_path: Path | None = None, claude: ClaudeStore | None = None, devin: DevinStore | None = None, factory: FactoryStore | None = None, windsurf: WindsurfStore | None = None) -> None:
+    def __init__(self, codex: CodexStore, pi: PiStore, opencode: OpenCodeStore, index_path: Path | None = None, claude: ClaudeStore | None = None, devin: DevinStore | None = None, factory: FactoryStore | None = None, windsurf: WindsurfStore | None = None, grok: GrokStore | None = None) -> None:
         self._stores: dict[str, SessionStore] = {
             "codex": codex,
             "pi": pi,
@@ -838,6 +840,8 @@ class SessionSearchEngine:
             self._stores["factory"] = factory
         if windsurf is not None:
             self._stores["windsurf"] = windsurf
+        if grok is not None:
+            self._stores["grok"] = grok
         self._extractor = MessageExtractor()
         self._index = SessionSearchIndex(index_path)
 

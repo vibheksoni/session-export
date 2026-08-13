@@ -13,7 +13,7 @@ except ImportError:
 from session_sdk.json_types import JsonObject, as_list, as_object, as_str, string_value
 from session_sdk.jsonl import JsonlFile
 from session_sdk.models import NativeSession, SessionSummary
-from session_sdk.paths import codex_date_parts, codex_filename_timestamp, encode_pi_cwd, epoch_ms_to_iso, pi_filename_timestamp, sanitize_claude_cwd
+from session_sdk.paths import codex_date_parts, codex_filename_timestamp, decode_grok_cwd_dirname, encode_grok_cwd_dirname, encode_pi_cwd, epoch_ms_to_iso, pi_filename_timestamp, sanitize_claude_cwd
 
 import sqlite3 as _sqlite3
 
@@ -1072,6 +1072,234 @@ class WindsurfStore(SessionStore):
             if ts_seconds is not None:
                 return epoch_ms_to_iso(ts_seconds * 1000)
         return ""
+
+
+class GrokStore(SessionStore):
+    """Filesystem store for Grok Build sessions.
+
+    Grok Build (the ``grok`` CLI) stores each session under
+    ``{grok_home}/sessions/{url_encoded_cwd}/{session_id}/`` with
+    ``summary.json`` holding metadata (info.id, info.cwd, timestamps,
+    model id, message counts) and ``updates.jsonl`` holding the
+    authoritative ACP session update stream: one envelope per line with
+    ``{timestamp, method: "session/update", params: {sessionId, update}}``.
+    """
+
+    provider_name = "grok"
+
+    def __init__(self, grok_home: Path, session_dir: Path | None = None) -> None:
+        self._grok_home = grok_home
+        self._session_dir = session_dir
+        self._path_cache: list[Path] | None = None
+        self._id_index: dict[str, Path] | None = None
+
+    @property
+    def root(self) -> Path:
+        return self._grok_home
+
+    def list(self, *, workers: int = 1) -> list[SessionSummary]:
+        paths = self._session_paths()
+        if workers <= 1 or len(paths) <= 1:
+            return [s for path in paths if (s := self._safe_summary(path)) is not None]
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=min(workers, len(paths)), thread_name_prefix="grok-list") as executor:
+            results = list(executor.map(self._safe_summary, paths))
+        return [s for s in results if s is not None]
+
+    def list_metadata(self, *, workers: int = 1) -> list[SessionSummary]:
+        return self.list(workers=workers)
+
+    def load(self, session_id: str) -> NativeSession:
+        path = self._find_path(session_id)
+        if path is not None:
+            return self._load_file(path)
+        raise FileNotFoundError(f"Grok session not found: {session_id}")
+
+    def load_path(self, path: Path) -> NativeSession:
+        return self._load_file(path)
+
+    def _find_path(self, session_id: str) -> Path | None:
+        index = self._id_index_cache()
+        if session_id in index:
+            return index[session_id]
+        for path in self._session_paths():
+            if session_id in path.name:
+                return path
+        return None
+
+    def destination_path(self, session_id: str, cwd: str) -> Path:
+        group = encode_grok_cwd_dirname(cwd)
+        return self._active_session_root() / group / session_id
+
+    def write(self, path: Path, records: list[JsonObject], *, overwrite: bool = False) -> None:
+        """Write a Grok session directory: updates.jsonl + summary.json.
+
+        ``records`` must be list of envelope dicts (already shaped as
+        ``{"timestamp", "method", "params"}``); the builder produces them.
+        A ``summary.json`` is derived from the first envelope's session id
+        plus any ``{"_summary": {...}}`` metadata record the builder emits.
+        """
+        session_dir = Path(path)
+        updates_file = session_dir / "updates.jsonl"
+        if updates_file.exists() and not overwrite:
+            raise FileExistsError(f"destination exists: {updates_file}")
+        session_dir.mkdir(parents=True, exist_ok=True)
+
+        summary: dict[str, object] = {}
+        envelopes: list[JsonObject] = []
+        for record in records:
+            if isinstance(record, dict) and "_summary" in record:
+                summary = dict(as_object(record.get("_summary")) or {})
+            else:
+                envelopes.append(record)
+        if not summary:
+            summary = _derive_grok_summary(envelopes, session_dir)
+
+        JsonlFile(updates_file).write(envelopes, overwrite=True)
+        summary_path = session_dir / "summary.json"
+        if summary_path.exists() and not overwrite:
+            raise FileExistsError(f"destination exists: {summary_path}")
+        summary_path.write_text(_json_dumps_pretty(summary), encoding="utf-8")
+        # Long-path groups record the original cwd so decode is reversible.
+        group_dir = session_dir.parent
+        if group_dir.name != encode_grok_cwd_dirname(str(summary.get("cwd") or "")):
+            cwd_file = group_dir / ".cwd"
+            if not cwd_file.exists():
+                cwd = summary.get("cwd")
+                if cwd:
+                    cwd_file.write_text(str(cwd), encoding="utf-8")
+
+    def _session_paths(self) -> list[Path]:
+        if self._path_cache is not None:
+            return self._path_cache
+        root = self._active_session_root()
+        if not root.exists():
+            self._path_cache = []
+            return []
+        dirs: list[Path] = []
+        for group in sorted(p for p in root.iterdir() if p.is_dir()):
+            if (group / "updates.jsonl").is_file() or (group / "summary.json").is_file():
+                # Empty-cwd export: the session dir collapsed into the group
+                # dir (no encoded-cwd group nesting).
+                dirs.append(group)
+                continue
+            for session_dir in sorted(p for p in group.iterdir() if p.is_dir()):
+                if (session_dir / "updates.jsonl").is_file() or (session_dir / "summary.json").is_file():
+                    dirs.append(session_dir)
+        self._path_cache = dirs
+        return dirs
+
+    def _id_index_cache(self) -> dict[str, Path]:
+        if self._id_index is not None:
+            return self._id_index
+        index: dict[str, Path] = {}
+        for path in self._session_paths():
+            name = path.name
+            if name and name not in index:
+                index[name] = path
+        self._id_index = index
+        return index
+
+    def _active_session_root(self) -> Path:
+        return self._session_dir or (self._grok_home / "sessions")
+
+    def _load_file(self, path: Path) -> NativeSession:
+        summary = _read_grok_summary(path)
+        session_id = str(summary.get("id") or path.name)
+        cwd = str(summary.get("cwd") or decode_grok_cwd_dirname(path.parent.name, path.parent) or "")
+        timestamp = _summary_timestamp_to_iso(summary) or ""
+        records = JsonlFile(path / "updates.jsonl").read() if (path / "updates.jsonl").is_file() else []
+        return NativeSession("grok", session_id, cwd, timestamp, path, records)
+
+    def _safe_summary(self, path: Path) -> SessionSummary | None:
+        try:
+            summary = _read_grok_summary(path)
+            session_id = str(summary.get("id") or path.name)
+            cwd = str(summary.get("cwd") or decode_grok_cwd_dirname(path.parent.name, path.parent) or "")
+            timestamp = _summary_timestamp_to_iso(summary) or ""
+            num_messages = summary.get("num_messages")
+            message_count = int(num_messages) if isinstance(num_messages, int) else -1
+            return SessionSummary("grok", session_id, cwd, timestamp, path, message_count)
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            print(f"warning: skipped unreadable Grok session {path}: {exc}", file=sys.stderr)
+            return None
+
+
+def _json_dumps_pretty(value: object) -> str:
+    if _HAS_ORJSON:
+        return orjson.dumps(value, option=orjson.OPT_INDENT_2).decode("utf-8")
+    return json.dumps(value, indent=2)
+
+
+def _read_grok_summary(session_dir: Path) -> dict[str, object]:
+    """Read and flatten a Grok summary.json into {id, cwd, title, ...}."""
+    summary_path = session_dir / "summary.json"
+    if not summary_path.is_file():
+        return {}
+    raw = _json_loads(summary_path.read_bytes())
+    if not isinstance(raw, dict):
+        return {}
+    info = as_object(raw.get("info")) or {}
+    created = raw.get("created_at")
+    updated = raw.get("updated_at")
+    return {
+        "id": string_value(info, "id"),
+        "cwd": string_value(info, "cwd"),
+        "title": string_value(raw, "generated_title") or string_value(raw, "session_summary"),
+        "created_at": created,
+        "updated_at": updated,
+        "num_messages": raw.get("num_messages"),
+        "num_chat_messages": raw.get("num_chat_messages"),
+        "current_model_id": string_value(raw, "current_model_id"),
+        "parent_session_id": string_value(raw, "parent_session_id"),
+        "agent_name": string_value(raw, "agent_name"),
+    }
+
+
+def _summary_timestamp_to_iso(summary: dict[str, object]) -> str:
+    value = summary.get("created_at") or summary.get("updated_at")
+    if isinstance(value, str) and value:
+        return value
+    if isinstance(value, (int, float)):
+        return epoch_ms_to_iso(int(value) * 1000 if value < 10**12 else int(value))
+    return ""
+
+
+def _derive_grok_summary(envelopes: list[JsonObject], session_dir: Path) -> dict[str, object]:
+    """Derive a minimal summary.json when the builder did not supply one."""
+    session_id = session_dir.name
+    cwd = decode_grok_cwd_dirname(session_dir.parent.name, session_dir.parent)
+    title = ""
+    model_id = ""
+    count = 0
+    for record in envelopes:
+        if not isinstance(record, dict):
+            continue
+        params = as_object(record.get("params")) or {}
+        sid = string_value(params, "sessionId")
+        if sid:
+            session_id = sid
+        update = as_object(params.get("update")) or {}
+        utype = string_value(update, "sessionUpdate")
+        if utype in ("user_message_chunk", "agent_message_chunk", "agent_thought_chunk"):
+            count += 1
+        elif utype == "session_info_update":
+            title = string_value(update, "title") or title
+        meta = as_object(record.get("_meta")) or {}
+        if not model_id:
+            model_id = string_value(meta, "modelId") or string_value(meta, "model_id")
+    return {
+        "id": session_id,
+        "cwd": cwd,
+        "title": title,
+        "created_at": "",
+        "updated_at": "",
+        "num_messages": count,
+        "num_chat_messages": count,
+        "current_model_id": model_id,
+        "parent_session_id": "",
+        "agent_name": "",
+    }
 
 
 class PiDcpStore:

@@ -102,6 +102,13 @@ class WindowsDefaults:
         return self._home / ".codeium" / "windsurf"
 
     @property
+    def grok_home(self) -> Path:
+        env = os.environ.get("GROK_HOME")
+        if env:
+            return Path(env)
+        return self._home / ".grok"
+
+    @property
     def opencode_session_dir(self) -> Path:
         return self.opencode_data_home / "session-export"
 
@@ -189,3 +196,51 @@ def encode_pi_cwd(cwd: str) -> str:
     stripped = resolved.lstrip("/\\")
     encoded = stripped.replace("/", "-").replace("\\", "-").replace(":", "-")
     return f"--{encoded}--"
+
+
+def encode_grok_cwd_dirname(cwd: str) -> str:
+    """Encode a cwd into a Grok sessions group directory name.
+
+    Grok URL-encodes the working directory to name the session group
+    (``sessions/<encoded-cwd>/<session-id>/``).  When the URL-encoded form
+    exceeds 255 bytes it falls back to ``{slug}-{blake3_hex16}`` and records
+    the original path in a ``.cwd`` file inside the group.  This mirrors
+    ``encode_cwd_dirname`` in ``crates/codegen/xai-grok-config/src/paths.rs``.
+    """
+    from urllib.parse import quote
+
+    encoded = quote(cwd, safe="")
+    if len(encoded) <= 255:
+        return encoded
+    # Long-path fallback: slug + 16-hex digest.  Python's stdlib has no
+    # blake3, so use a deterministic blake2b digest truncated to 16 hex
+    # chars; the authoritative original path is written to .cwd on disk.
+    import hashlib
+    import re
+
+    slug = re.sub(r"[^a-zA-Z0-9]+", "-", cwd).lower().strip("-")
+    slug = slug[:40] or "workspace"
+    digest = hashlib.blake2b(cwd.encode("utf-8"), digest_size=8).hexdigest()
+    return f"{slug}-{digest}"
+
+
+def decode_grok_cwd_dirname(name: str, group_dir: Path | None = None) -> str:
+    """Recover the original cwd from a Grok sessions group directory name.
+
+    Mirrors ``decode_cwd_from_dirname`` in the Grok source: URL-decoded
+    absolute paths start with ``/`` (Unix) or a drive letter (Windows); the
+    slug-hash fallback never does, so a ``.cwd`` file is read instead.
+    """
+    from urllib.parse import unquote
+
+    decoded = unquote(name)
+    if decoded.startswith("/") or (len(decoded) >= 2 and decoded[1] == ":"):
+        return decoded
+    if group_dir is not None:
+        try:
+            cwd_file = Path(group_dir) / ".cwd"
+            if cwd_file.is_file():
+                return cwd_file.read_text(encoding="utf-8").strip()
+        except OSError:
+            pass
+    return ""

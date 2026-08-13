@@ -7,7 +7,7 @@ hide:
 # UniSessions
 
 Convert AI coding CLI sessions between **Codex**, **Claude Code**, **Pi**,
-**OpenCode**, **Devin**, **Factory**, and **Windsurf Cascade**. SDK, CLI, MCP chat recall, and
+**OpenCode**, **Devin**, **Factory**, **Windsurf Cascade**, and **Grok Build**. SDK, CLI, MCP chat recall, and
 trace export for fine-tuning.
 
 [![PyPI](https://img.shields.io/pypi/v/unisessions?logo=pypi&logoColor=white)](https://pypi.org/project/unisessions/)
@@ -24,7 +24,7 @@ trace export for fine-tuning.
 ## Why I built this
 
 I use a lot of AI coding CLIs — Codex, Claude Code, Pi, OpenCode, Devin,
-Factory, Windsurf Cascade — and wanted to move a session from one tool into another without
+Factory, Windsurf Cascade, Grok Build — and wanted to move a session from one tool into another without
 losing the useful conversation history.
 
 I looked for a tool that could convert one AI CLI session into another and
@@ -38,7 +38,7 @@ explaining the same thing again.
 So this does three things:
 
 - **Move sessions** between Codex, Pi, OpenCode, Claude Code, Devin,
-  Factory, and Windsurf Cascade in any direction — all 42 combinations
+  Factory, Windsurf Cascade, and Grok Build in any direction — all 56 combinations
 - **Export traces** in HuggingFace STS, OpenAI fine-tuning, or ShareGPT
   format for Hub upload or model training
 - **Search chat history** across all sessions, providers, and projects so
@@ -49,20 +49,21 @@ and MCP server are just built on top of the SDK.
 
 ## Features
 
-### 42 conversion directions
+### 56 conversion directions
 
-Convert any session to any other format. All seven providers are supported in
+Convert any session to any other format. All eight providers are supported in
 every direction.
 
-| From \ To | Pi | Codex | OpenCode | Claude | Devin | Factory | Windsurf |
-|---|---|---|---|---|---|---|---|
-| **Codex** | ✓ | -- | ✓ | ✓ | ✓ | ✓ | ✓ |
-| **Pi** | -- | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| **OpenCode** | ✓ | ✓ | -- | ✓ | ✓ | ✓ | ✓ |
-| **Claude** | ✓ | ✓ | ✓ | -- | ✓ | ✓ | ✓ |
-| **Devin** | ✓ | ✓ | ✓ | ✓ | -- | ✓ | ✓ |
-| **Factory** | ✓ | ✓ | ✓ | ✓ | ✓ | -- | ✓ |
-| **Windsurf** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | -- |
+| From \ To | Pi | Codex | OpenCode | Claude | Devin | Factory | Windsurf | Grok |
+|---|---|---|---|---|---|---|---|---|
+| **Codex** | ✓ | -- | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| **Pi** | -- | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| **OpenCode** | ✓ | ✓ | -- | ✓ | ✓ | ✓ | ✓ | ✓ |
+| **Claude** | ✓ | ✓ | ✓ | -- | ✓ | ✓ | ✓ | ✓ |
+| **Devin** | ✓ | ✓ | ✓ | ✓ | -- | ✓ | ✓ | ✓ |
+| **Factory** | ✓ | ✓ | ✓ | ✓ | ✓ | -- | ✓ | ✓ |
+| **Windsurf** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | -- | ✓ |
+| **Grok** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | -- |
 
 ### Trace export
 
@@ -106,10 +107,10 @@ python -m unisessions codex-to-pi <session-id> --write
 
 ## Stats
 
-- **7 providers**: Codex, Pi, OpenCode, Claude Code, Devin, Factory, Windsurf Cascade
-- **42 conversion directions**: every provider to every other provider
+- **8 providers**: Codex, Pi, OpenCode, Claude Code, Devin, Factory, Windsurf Cascade, Grok Build
+- **56 conversion directions**: every provider to every other provider
 - **3 trace formats**: HuggingFace STS, OpenAI, ShareGPT
-- **32 tests**: conversion shape, compaction, dry-run safety, search, traces
+- **36 tests**: conversion shape, compaction, dry-run safety, search, traces
 - **MIT licensed**: open source, do whatever
 
 ---
