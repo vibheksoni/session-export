@@ -1493,14 +1493,35 @@ class FreebuffStore(SessionStore):
         finally:
             conn.close()
 
-        # Write project.json alongside the db.
+        # Write project.json alongside the db.  Freebuff verifies
+        # project.json.projectId against the project root's
+        # .freebuff/project-id marker and refuses to open the database on
+        # mismatch, so the id must be the project identity UUID -- never a
+        # path.  Fall back to the existing file's id, then a fresh UUID.
         import uuid as _uuid
-        project_id = thread.get("project_id") or str(_uuid.uuid4())
+        project_id = None
+        project_path = str(thread.get("project_path") or "")
+        if project_path:
+            pid_file = Path(project_path) / ".freebuff" / "project-id"
+            try:
+                if pid_file.is_file():
+                    project_id = pid_file.read_text(encoding="utf-8").strip()
+            except OSError:
+                pass
+        if not project_id:
+            try:
+                existing_meta = _json_loads((db_path.parent / "project.json").read_bytes())
+                if isinstance(existing_meta, dict) and string_value(existing_meta, "projectId"):
+                    project_id = string_value(existing_meta, "projectId")
+            except Exception:
+                pass
+        if not project_id:
+            project_id = str(_uuid.uuid4())
         (db_path.parent / "project.json").write_text(
             _json_dumps_pretty({
                 "version": 1,
                 "projectId": project_id,
-                "projectPath": str(thread.get("project_path") or ""),
+                "projectPath": project_path,
                 "database": self._DB_NAME,
             }),
             encoding="utf-8",
