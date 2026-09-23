@@ -109,6 +109,13 @@ class WindowsDefaults:
         return self._home / ".grok"
 
     @property
+    def freebuff_home(self) -> Path:
+        env = os.environ.get("FREEBUFF_CONFIG_DIR")
+        if env:
+            return Path(env)
+        return self._home / ".config" / "freebuff-desktop"
+
+    @property
     def opencode_session_dir(self) -> Path:
         return self.opencode_data_home / "session-export"
 

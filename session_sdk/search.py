@@ -19,7 +19,7 @@ from session_sdk.converters import MessageExtractor
 from session_sdk.models import NativeSession, SessionSummary, TextMessage
 from session_sdk.stores import ClaudeStore, CodexStore, DevinStore, FactoryStore, OpenCodeStore, PiStore, SessionStore, WindsurfStore
 
-Provider = Literal["all", "codex", "pi", "opencode", "claude", "devin", "factory", "windsurf", "grok"]
+Provider = Literal["all", "codex", "pi", "opencode", "claude", "devin", "factory", "windsurf", "grok", "freebuff"]
 CwdMatch = Literal["exact", "contains", "prefix"]
 MatchMode = Literal["literal", "regex", "all_keywords", "any_keywords"]
 StalePolicy = Literal["refresh", "skip", "error"]
@@ -658,6 +658,8 @@ class SessionSearchIndex:
             return extractor.from_windsurf(session)
         if session.provider == "grok":
             return extractor.from_grok(session)
+        if session.provider == "freebuff":
+            return extractor.from_freebuff(session)
         return []
 
     @staticmethod
@@ -826,7 +828,7 @@ class SessionSearchIndex:
 
 
 class SessionSearchEngine:
-    def __init__(self, codex: CodexStore, pi: PiStore, opencode: OpenCodeStore, index_path: Path | None = None, claude: ClaudeStore | None = None, devin: DevinStore | None = None, factory: FactoryStore | None = None, windsurf: WindsurfStore | None = None, grok: GrokStore | None = None) -> None:
+    def __init__(self, codex: CodexStore, pi: PiStore, opencode: OpenCodeStore, index_path: Path | None = None, claude: ClaudeStore | None = None, devin: DevinStore | None = None, factory: FactoryStore | None = None, windsurf: WindsurfStore | None = None, grok: GrokStore | None = None, freebuff: FreebuffStore | None = None) -> None:
         self._stores: dict[str, SessionStore] = {
             "codex": codex,
             "pi": pi,
@@ -842,6 +844,8 @@ class SessionSearchEngine:
             self._stores["windsurf"] = windsurf
         if grok is not None:
             self._stores["grok"] = grok
+        if freebuff is not None:
+            self._stores["freebuff"] = freebuff
         self._extractor = MessageExtractor()
         self._index = SessionSearchIndex(index_path)
 

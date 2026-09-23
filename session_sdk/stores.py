@@ -1302,6 +1302,341 @@ def _derive_grok_summary(envelopes: list[JsonObject], session_dir: Path) -> dict
     }
 
 
+class FreebuffStore(SessionStore):
+    """Filesystem store for Freebuff Desktop sessions.
+
+    Freebuff Desktop (freebuff.com, by CodebuffAI) stores each project
+    under ``{home}/projects/<slug>-<project-id>/`` with a ``project.json``
+    header and a SQLite database (``desktop-v2.db``) holding:
+
+    - ``threads``: session headers (id, project_path = cwd, title, status,
+      model, created_at/updated_at epoch-ms, fork_source_thread_id, ...)
+    - ``messages``: one row per message (seq autoincrement, thread_id,
+      role, parts_json array, ts epoch-ms)
+
+    Message ``parts_json`` entries are kind-tagged:
+    ``text`` (chat text), ``reasoning`` (thinking), ``tool``
+    (tool invocation), ``changes`` (file diffs), ``ad`` (sponsored).  Only
+    ``text`` parts carry the conversation; the rest are skipped by the
+    text-history extractor.
+    """
+
+    provider_name = "freebuff"
+    _DB_NAME = "desktop-v2.db"
+
+    def __init__(self, freebuff_home: Path, session_dir: Path | None = None) -> None:
+        self._freebuff_home = freebuff_home
+        self._session_dir = session_dir
+        self._path_cache: list[Path] | None = None
+        self._id_index: dict[str, Path] | None = None
+
+    @property
+    def root(self) -> Path:
+        return self._freebuff_home
+
+    def list(self, *, workers: int = 1) -> list[SessionSummary]:
+        paths = self._session_paths()
+        if workers <= 1 or len(paths) <= 1:
+            return [s for path in paths for s in self._summaries_from_db(path)]
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=min(workers, len(paths)), thread_name_prefix="fb-list") as executor:
+            results = list(executor.map(self._summaries_from_db, paths))
+        return [s for batch in results for s in batch]
+
+    def list_metadata(self, *, workers: int = 1) -> list[SessionSummary]:
+        return self.list(workers=workers)
+
+    def load(self, session_id: str) -> NativeSession:
+        path = self._find_path(session_id)
+        if path is not None:
+            return self._load_file(path, session_id)
+        raise FileNotFoundError(f"Freebuff session not found: {session_id}")
+
+    def load_path(self, path: Path) -> NativeSession:
+        # path may point at a db file or a session thread id is unknown here;
+        # resolve by scanning the db's first thread.
+        return self._load_file(path, None)
+
+    def _find_path(self, session_id: str) -> Path | None:
+        index = self._id_index_cache()
+        if session_id in index:
+            return index[session_id]
+        return None
+
+    def destination_path(self, session_id: str, cwd: str) -> Path:
+        """Deterministic destination: {projects}/<slug(cwd)>-<id8>/desktop-v2.db."""
+        from session_sdk.paths import opencode_slug
+        from pathlib import PurePath
+        base = PurePath(cwd).name if cwd else "imported"
+        slug = opencode_slug(base)
+        return self._active_session_root() / f"{slug}-{session_id[:8]}" / self._DB_NAME
+
+    def write(self, path: Path, records: list[JsonObject], *, overwrite: bool = False) -> None:
+        """Write a Freebuff project DB from records.
+
+        ``records`` is a list of message dicts (``{"seq", "role", "parts",
+        "ts"}``); a leading ``{"_thread": {...}}`` record carries thread
+        metadata (id, project_path, title, model, created_at, updated_at).
+        """
+        db_path = Path(path)
+        if db_path.exists() and not overwrite:
+            raise FileExistsError(f"destination exists: {db_path}")
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+
+        thread: dict[str, object] = {
+            "id": db_path.parent.name.rsplit("-", 1)[-1],
+            "project_path": "",
+            "title": "Imported session",
+            "status": "closed",
+            "model": "",
+            "created_at": 0,
+            "updated_at": 0,
+        }
+        messages: list[JsonObject] = []
+        for record in records:
+            if isinstance(record, dict) and "_thread" in record:
+                thread.update(as_object(record.get("_thread")) or {})
+            elif isinstance(record, dict) and "role" in record:
+                messages.append(record)
+
+        conn = _freebuff_connect(db_path, create=True)
+        try:
+            conn.executescript(_FREEBUFF_SCHEMA)
+            project_path = str(thread.get("project_path") or "")
+            conn.execute(
+                "INSERT OR REPLACE INTO projects (id, root_path, default_branch, created_at) VALUES (?,?,?,?)",
+                (project_path, project_path, "main", int(thread.get("created_at") or 0)),
+            )
+            thread_id = str(thread.get("id") or db_path.parent.name)
+            conn.execute(
+                "INSERT OR REPLACE INTO threads (id, project_id, project_path, title, status, model, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?)",
+                (
+                    thread_id,
+                    project_path,
+                    project_path,
+                    str(thread.get("title") or "Imported session"),
+                    str(thread.get("status") or "closed"),
+                    str(thread.get("model") or ""),
+                    int(thread.get("created_at") or 0),
+                    int(thread.get("updated_at") or 0),
+                ),
+            )
+            for index, message in enumerate(messages, start=1):
+                conn.execute(
+                    "INSERT INTO messages (seq, thread_id, role, parts_json, attachments_json, metrics_json, ts) VALUES (?,?,?,?,?,?,?)",
+                    (
+                        index,
+                        thread_id,
+                        str(message.get("role") or "user"),
+                        _json_dumps_default(message.get("parts") or [{"kind": "text", "text": ""}]),
+                        "[]",
+                        "{}",
+                        int(message.get("ts") or 0),
+                    ),
+                )
+            conn.commit()
+        finally:
+            conn.close()
+
+        # Write project.json alongside the db.
+        import uuid as _uuid
+        project_id = thread.get("project_id") or str(_uuid.uuid4())
+        (db_path.parent / "project.json").write_text(
+            _json_dumps_pretty({
+                "version": 1,
+                "projectId": project_id,
+                "projectPath": str(thread.get("project_path") or ""),
+                "database": self._DB_NAME,
+            }),
+            encoding="utf-8",
+        )
+
+    def _session_paths(self) -> list[Path]:
+        if self._path_cache is not None:
+            return self._path_cache
+        root = self._active_session_root()
+        if not root.exists():
+            self._path_cache = []
+            return []
+        paths: list[Path] = []
+        for project_dir in sorted(p for p in root.iterdir() if p.is_dir()):
+            db = project_dir / self._DB_NAME
+            if db.is_file() and db.stat().st_size > 0:
+                paths.append(db)
+        self._path_cache = paths
+        return paths
+
+    def _id_index_cache(self) -> dict[str, Path]:
+        if self._id_index is not None:
+            return self._id_index
+        index: dict[str, Path] = {}
+        for db_path in self._session_paths():
+            try:
+                conn = _freebuff_connect(db_path)
+                try:
+                    for row in conn.execute("SELECT id FROM threads"):
+                        index[str(row[0])] = db_path
+                finally:
+                    conn.close()
+            except Exception:
+                continue
+        self._id_index = index
+        return index
+
+    def _active_session_root(self) -> Path:
+        return self._session_dir or (self._freebuff_home / "projects")
+
+    def _summaries_from_db(self, db_path: Path) -> list[SessionSummary]:
+        summaries: list[SessionSummary] = []
+        try:
+            conn = _freebuff_connect(db_path)
+            try:
+                rows = conn.execute(
+                    "SELECT t.id, t.project_path, t.created_at, t.updated_at, "
+                    "(SELECT COUNT(*) FROM messages m WHERE m.thread_id = t.id) AS n "
+                    "FROM threads t"
+                ).fetchall()
+            finally:
+                conn.close()
+        except (_sqlite3.Error, OSError) as exc:
+            print(f"warning: skipped unreadable Freebuff session db {db_path}: {exc}", file=sys.stderr)
+            return summaries
+        for row in rows:
+            ts_value = row[2] if row[2] else row[3] or 0
+            timestamp = epoch_ms_to_iso(int(ts_value)) if isinstance(ts_value, (int, float)) else ""
+            summaries.append(SessionSummary(
+                "freebuff",
+                str(row[0]),
+                str(row[1] or ""),
+                timestamp,
+                db_path,
+                int(row[4] or 0),
+            ))
+        return summaries
+
+    def _load_file(self, db_path: Path, session_id: str | None) -> NativeSession:
+        try:
+            conn = _freebuff_connect(db_path)
+        except _sqlite3.Error as exc:
+            raise FileNotFoundError(f"Freebuff database unreadable: {db_path}: {exc}") from exc
+        try:
+            if session_id is None:
+                row = conn.execute("SELECT id FROM threads LIMIT 1").fetchone()
+                session_id = str(row[0]) if row else db_path.parent.name
+            thread = conn.execute(
+                "SELECT id, project_path, title, status, model, created_at, updated_at, fork_source_thread_id "
+                "FROM threads WHERE id = ?",
+                (session_id,),
+            ).fetchone()
+            if thread is None:
+                raise FileNotFoundError(f"Freebuff thread not found: {session_id}")
+            messages: list[JsonObject] = []
+            for msg in conn.execute(
+                "SELECT seq, role, parts_json, ts FROM messages WHERE thread_id = ? ORDER BY seq",
+                (session_id,),
+            ):
+                parts = _json_loads(msg[2]) if msg[2] else []
+                messages.append({
+                    "seq": msg[0],
+                    "role": msg[1],
+                    "parts": parts if isinstance(parts, list) else [],
+                    "ts": msg[3],
+                })
+        finally:
+            conn.close()
+        ts_value = thread[5] if thread[5] else thread[6] or 0
+        timestamp = epoch_ms_to_iso(int(ts_value)) if isinstance(ts_value, (int, float)) else ""
+        records: list[JsonObject] = [{
+            "_thread": {
+                "id": thread[0],
+                "project_path": thread[1] or "",
+                "title": thread[2] or "",
+                "status": thread[3] or "",
+                "model": thread[4] or "",
+                "created_at": thread[5],
+                "updated_at": thread[6],
+                "fork_source_thread_id": thread[7],
+            }
+        }]
+        records.extend(messages)
+        return NativeSession("freebuff", session_id, str(thread[1] or ""), timestamp, db_path, records)
+
+
+_FREEBUFF_SCHEMA = """
+CREATE TABLE IF NOT EXISTS projects (
+    id             TEXT PRIMARY KEY,
+    root_path      TEXT NOT NULL,
+    default_branch TEXT NOT NULL DEFAULT 'main',
+    created_at     INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS threads (
+    id             TEXT PRIMARY KEY,
+    project_id     TEXT NOT NULL,
+    project_path   TEXT NOT NULL,
+    title          TEXT NOT NULL DEFAULT 'New thread',
+    status         TEXT NOT NULL DEFAULT 'open',
+    harness_id     TEXT,
+    model          TEXT,
+    reasoning_effort TEXT,
+    agent_mode     TEXT NOT NULL DEFAULT 'build',
+    execution_mode TEXT NOT NULL DEFAULT 'local',
+    branch         TEXT,
+    worktree_path  TEXT,
+    fork_source_thread_id TEXT,
+    created_at     INTEGER NOT NULL,
+    updated_at     INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS messages (
+    seq              INTEGER PRIMARY KEY AUTOINCREMENT,
+    thread_id        TEXT NOT NULL,
+    request_id       TEXT,
+    input_id         TEXT,
+    role             TEXT NOT NULL,
+    parts_json       TEXT NOT NULL DEFAULT '[]',
+    attachments_json TEXT NOT NULL DEFAULT '[]',
+    metrics_json     TEXT NOT NULL DEFAULT '{}',
+    ts               INTEGER NOT NULL
+);
+"""
+
+
+def _freebuff_connect(db_path: Path, *, create: bool = False) -> sqlite3.Connection:
+    """Open a Freebuff SQLite db safely (read-only when possible).
+
+    Freebuff Desktop may hold the database open with a WAL journal.  A
+    read-only connection reads the WAL without locking; if that fails
+    (e.g. exclusive locks), fall back to the SQLite Online Backup API to
+    snapshot into a temp file and open the snapshot.
+    """
+    if create:
+        return _sqlite3.connect(str(db_path), timeout=10)
+    try:
+        conn = _sqlite3.connect(f"file:{db_path.as_posix()}?mode=ro", uri=True, timeout=5)
+        conn.execute("PRAGMA query_only=ON")
+        return conn
+    except _sqlite3.Error:
+        import tempfile
+        src = _sqlite3.connect(str(db_path), timeout=10)
+        try:
+            tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+            tmp_name = tmp.name
+            tmp.close()
+            dst = _sqlite3.connect(tmp_name)
+            try:
+                src.backup(dst)
+            finally:
+                dst.close()
+        finally:
+            src.close()
+        return _sqlite3.connect(tmp_name, timeout=10)
+
+
+def _json_dumps_default(value: object) -> str:
+    if _HAS_ORJSON:
+        return orjson.dumps(value).decode("utf-8")
+    return json.dumps(value)
+
+
 class PiDcpStore:
     def __init__(self, pi_dcp_home: Path) -> None:
         self._pi_dcp_home = pi_dcp_home

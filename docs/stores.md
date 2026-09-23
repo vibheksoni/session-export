@@ -275,6 +275,53 @@ Grok Build (the `grok` CLI) stores each session as a directory:
 
 Where `<grok-home>` is `$GROK_HOME` if set, otherwise `~/.grok`.
 
+## FreebuffStore
+
+```python
+from session_sdk.stores import FreebuffStore
+
+store = FreebuffStore(defaults.freebuff_home)
+# Or with a custom project directory:
+store = FreebuffStore(defaults.freebuff_home, session_dir=Path("/custom/freebuff/projects"))
+```
+
+| Method | Description |
+|---|---|
+| `list(workers=1)` | Scan `projects/<slug>-<id>/` directories for `desktop-v2.db` files. Reads `threads` rows + counts `messages` per thread. |
+| `list_metadata(workers=1)` | Same as `list()` (metadata from the SQLite `threads` table). |
+| `load(session_id)` | Find by thread id in the `threads` table. |
+| `load_path(path)` | Load a project `desktop-v2.db` file (resolves the thread id from the db). |
+| `destination_path(session_id, cwd)` | Compute target: `projects/<slug(cwd)>-<id8>/desktop-v2.db`. |
+| `write(path, records, overwrite=False)` | Create the project DB (`projects`/`threads`/`messages` tables) + `project.json`. |
+
+### Freebuff Desktop Format
+
+Freebuff Desktop (freebuff.com, by CodebuffAI) stores each session as a per-project SQLite database that Freebuff Desktop keeps open, so the store accesses it read-only:
+
+```
+{freebuff_home}/projects/<slug>-<project-id>/
+    project.json      # version, projectId, projectPath, database
+    desktop-v2.db     # SQLite: projects, threads, messages
+```
+
+- **`threads`**: session headers -- `id`, `project_id`, `project_path` (= cwd), `title`, `status`, `model`, `reasoning_effort`, `agent_mode`, `execution_mode`, `branch`, `worktree_path`, `fork_source_thread_id`, `created_at`/`updated_at` (epoch ms).
+- **`messages`**: one row per message -- `seq` (autoincrement), `thread_id`, `request_id`, `input_id`, `role`, `parts_json` (kind-tagged array), `attachments_json`, `metrics_json`, `ts` (epoch ms).
+- **`parts_json` kinds**: `text` (chat text), `reasoning` (thinking), `tool` (tool invocation), `changes` (file diffs), `ad` (sponsored). Only `text` parts carry the conversation; the rest are skipped by the text-history extractor.
+- **Session IDs**: thread ids from the `threads` table.
+
+### Read Safety
+
+Freebuff Desktop may hold `desktop-v2.db` open with a WAL journal. `FreebuffStore` opens the database read-only (`mode=ro` URI + `PRAGMA query_only=ON`), which reads the WAL without taking a lock. If the read-only open fails (e.g. exclusive locks), it falls back to the SQLite Online Backup API -- snapshotting the database into a temp file and opening the snapshot.
+
+### Default Paths
+
+```
+{freebuff_home}/projects/<slug>-<project-id>/desktop-v2.db
+{freebuff_home}/projects/<slug>-<project-id>/project.json
+```
+
+Where `{freebuff_home}` is `$FREEBUFF_CONFIG_DIR` if set, otherwise `~/.config/freebuff-desktop`.
+
 ## Caching Behavior
 
 All `SessionStore` subclasses cache two data structures after the first access:

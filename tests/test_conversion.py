@@ -1268,6 +1268,172 @@ class GrokTests(unittest.TestCase):
             self.assertTrue(all(s.provider == "grok" for s in summaries))
 
 
+class FreebuffTests(unittest.TestCase):
+    """Freebuff Desktop provider tests: SQLite threads/messages extraction."""
+
+    @staticmethod
+    def _make_db(db_path, threads, messages_by_thread):
+        """Create a Freebuff project db with threads + messages."""
+        import sqlite3
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(str(db_path))
+        try:
+            conn.executescript("""
+            CREATE TABLE projects (id TEXT PRIMARY KEY, root_path TEXT NOT NULL, default_branch TEXT NOT NULL DEFAULT 'main', created_at INTEGER NOT NULL);
+            CREATE TABLE threads (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, project_path TEXT NOT NULL, title TEXT NOT NULL DEFAULT 'New thread', status TEXT NOT NULL DEFAULT 'open', model TEXT, fork_source_thread_id TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
+            CREATE TABLE messages (seq INTEGER PRIMARY KEY AUTOINCREMENT, thread_id TEXT NOT NULL, role TEXT NOT NULL, parts_json TEXT NOT NULL DEFAULT '[]', attachments_json TEXT NOT NULL DEFAULT '[]', metrics_json TEXT NOT NULL DEFAULT '{}', ts INTEGER NOT NULL);
+            """)
+            _seq = 0
+            for tid, tinfo in threads.items():
+                conn.execute(
+                    "INSERT INTO threads (id, project_id, project_path, title, status, model, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?)",
+                    (tid, tinfo["path"], tinfo["path"], tinfo.get("title", "T"), "closed", tinfo.get("model", "m"), tinfo.get("created_at", 0), tinfo.get("updated_at", 0)),
+                )
+                conn.execute(
+                    "INSERT INTO projects (id, root_path, default_branch, created_at) VALUES (?,?,?,?)",
+                    (tinfo["path"], tinfo["path"], "main", 0),
+                )
+                for msg in messages_by_thread.get(tid, []):
+                    _seq += 1
+                    conn.execute(
+                        "INSERT INTO messages (seq, thread_id, role, parts_json, ts) VALUES (?,?,?,?,?)",
+                        (_seq, tid, msg["role"], __import__("json").dumps(msg["parts"]), msg["ts"]),
+                    )
+            conn.commit()
+        finally:
+            conn.close()
+        (db_path.parent / "project.json").write_text(
+            '{"version": 1, "projectId": "x", "projectPath": "' + threads[list(threads)[0]]["path"].replace("\\", "\\\\") + '", "database": "desktop-v2.db"}',
+            encoding="utf-8",
+        )
+
+    def test_freebuff_session_extraction(self) -> None:
+        import json as _json
+        with tempfile.TemporaryDirectory() as root_name:
+            root = Path(root_name)
+            db = root / "projects" / "proj-x" / "desktop-v2.db"
+            self._make_db(
+                db,
+                {"fb-thread-1": {"path": r"C:\test\project", "created_at": 1776873454000}},
+                {
+                    "fb-thread-1": [
+                        {"role": "user", "ts": 1776873454000, "parts": [{"kind": "text", "text": "Hello there"}]},
+                        {"role": "assistant", "ts": 1776873455000, "parts": [
+                            {"kind": "reasoning", "text": "thinking..."},
+                            {"kind": "tool", "toolName": "read_file", "input": {}},
+                            {"kind": "text", "text": "Hi back"},
+                            {"kind": "ad", "ad": {}},
+                        ]},
+                        {"role": "user", "ts": 1776873456000, "parts": [{"kind": "text", "text": ""}]},
+                    ]
+                },
+            )
+            from session_sdk.stores import FreebuffStore
+            store = FreebuffStore(root)
+            session = store.load("fb-thread-1")
+            self.assertEqual(session.provider, "freebuff")
+            self.assertEqual(session.cwd, r"C:\test\project")
+            from session_sdk.converters import MessageExtractor
+            messages = MessageExtractor().from_freebuff(session)
+            self.assertEqual(len(messages), 2)  # reasoning/tool/ad/empty skipped
+            self.assertEqual(messages[0].role, "user")
+            self.assertEqual(messages[0].text, "Hello there")
+            self.assertEqual(messages[1].role, "assistant")
+            self.assertEqual(messages[1].text, "Hi back")
+
+    def test_freebuff_to_pi_conversion(self) -> None:
+        with tempfile.TemporaryDirectory() as root_name:
+            root = Path(root_name)
+            db = root / "projects" / "proj-x" / "desktop-v2.db"
+            self._make_db(
+                db,
+                {"fb-thread-2": {"path": r"C:\test\project", "created_at": 1776873454000}},
+                {
+                    "fb-thread-2": [
+                        {"role": "user", "ts": 1776873454000, "parts": [{"kind": "text", "text": "Hello assistant"}]},
+                        {"role": "assistant", "ts": 1776873455000, "parts": [{"kind": "text", "text": "Hello user"}]},
+                    ]
+                },
+            )
+            from session_sdk.stores import FreebuffStore, PiStore, PiDcpStore
+            from session_sdk.converters import FreebuffToPiConverter
+            fb_store = FreebuffStore(root)
+            pi_store = PiStore(root / ".pi" / "agent")
+            dcp_store = PiDcpStore(root / ".pi-dcp")
+            converter = FreebuffToPiConverter(fb_store, pi_store, dcp_store, SessionIdFactory(preserve_ids=True))
+            plan = converter.plan("fb-thread-2")
+            self.assertEqual(plan.source.provider, "freebuff")
+            self.assertEqual(len(plan.records), 3)  # header + 2 messages
+            self.assertEqual(plan.records[0]["type"], "session")
+            self.assertEqual(plan.records[1]["message"]["role"], "user")
+            self.assertEqual(plan.records[2]["message"]["role"], "assistant")
+            converter.write(plan, overwrite=True)
+            self.assertTrue(plan.destination.exists())
+            self.assertTrue(plan.services[0].exists())
+
+    def test_freebuff_store_roundtrip(self) -> None:
+        with tempfile.TemporaryDirectory() as root_name:
+            root = Path(root_name)
+            from session_sdk.stores import PiStore, FreebuffStore
+            from session_sdk.converters import PiToFreebuffConverter, PiRecordBuilder
+            pi_store = PiStore(root / ".pi" / "agent")
+            records = PiRecordBuilder().build(
+                "pi-fb-001",
+                r"C:\test\project",
+                "2026-07-01T15:00:00Z",
+                [
+                    TextMessage("user", "Hello freebuff", "2026-07-01T15:00:01Z"),
+                    TextMessage("assistant", "Hello pi", "2026-07-01T15:00:02Z"),
+                ],
+            )
+            pi_path = pi_store.destination_path("pi-fb-001", "2026-07-01T15:00:00Z", r"C:\test\project")
+            pi_store.write(pi_path, records, overwrite=True)
+
+            fb_store = FreebuffStore(root / "freebuff")
+            converter = PiToFreebuffConverter(pi_store, fb_store, SessionIdFactory(preserve_ids=True))
+            plan = converter.plan("pi-fb-001")
+            converter.write(plan, overwrite=True)
+            self.assertTrue((plan.destination.parent / "project.json").exists())
+
+            session = fb_store.load("pi-fb-001")
+            self.assertEqual(session.provider, "freebuff")
+            self.assertEqual(session.cwd, r"C:\test\project")
+            from session_sdk.converters import MessageExtractor
+            messages = MessageExtractor().from_freebuff(session)
+            self.assertEqual(len(messages), 2)
+            self.assertEqual(messages[0].text, "Hello freebuff")
+            self.assertEqual(messages[1].text, "Hello pi")
+
+            summaries = fb_store.list()
+            self.assertEqual(len(summaries), 1)
+            self.assertEqual(summaries[0].session_id, "pi-fb-001")
+
+    def test_freebuff_list_sessions(self) -> None:
+        with tempfile.TemporaryDirectory() as root_name:
+            root = Path(root_name)
+            db = root / "projects" / "proj-a" / "desktop-v2.db"
+            self._make_db(
+                db,
+                {
+                    "fb-list-1": {"path": r"C:\test\a", "created_at": 1000},
+                    "fb-list-2": {"path": r"C:\test\b", "created_at": 2000},
+                },
+                {
+                    "fb-list-1": [{"role": "user", "ts": 1000, "parts": [{"kind": "text", "text": "m1"}]}],
+                    "fb-list-2": [{"role": "user", "ts": 2000, "parts": [{"kind": "text", "text": "m2"}]}],
+                },
+            )
+            from session_sdk.stores import FreebuffStore
+            store = FreebuffStore(root)
+            summaries = store.list()
+            self.assertEqual(len(summaries), 2)
+            ids = {s.session_id for s in summaries}
+            self.assertEqual(ids, {"fb-list-1", "fb-list-2"})
+            cwds = {s.cwd for s in summaries}
+            self.assertEqual(cwds, {r"C:\test\a", r"C:\test\b"})
+            self.assertTrue(all(s.provider == "freebuff" for s in summaries))
+
+
 class TraceTests(unittest.TestCase):
     def _make_messages(self) -> list[TextMessage]:
         return [

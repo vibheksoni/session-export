@@ -8,7 +8,7 @@ from session_sdk.json_types import JsonObject, as_list, as_object, as_str, seque
 from session_sdk.jsonl import _loads
 from session_sdk.models import ConversionPlan, NativeSession, TextMessage
 from session_sdk.paths import SessionIdFactory, iso_to_epoch_ms, opencode_id, opencode_slug
-from session_sdk.stores import ClaudeStore, CodexStore, DevinStore, FactoryStore, GrokStore, OpenCodeStore, PiDcpStore, PiStore, WindsurfStore
+from session_sdk.stores import ClaudeStore, CodexStore, DevinStore, FactoryStore, FreebuffStore, GrokStore, OpenCodeStore, PiDcpStore, PiStore, WindsurfStore
 
 
 def _count_jsonl_records(path: Path) -> int:
@@ -463,6 +463,39 @@ class MessageExtractor:
             flush(message_id)
         return messages
 
+    def from_freebuff(self, session: NativeSession) -> list[TextMessage]:
+        """Extract text history from a Freebuff Desktop session.
+
+        Freebuff stores messages in per-project SQLite: each record carries
+        ``role`` + ``parts`` (parsed parts_json) + ``ts`` (epoch ms).  Only
+        ``{"kind": "text"}`` parts are chat text; ``reasoning`` (thinking),
+        ``tool`` (invocations), ``changes`` (diffs) and ``ad`` parts are
+        skipped, matching the text-history contract of every other provider.
+        """
+        messages: list[TextMessage] = []
+        from session_sdk.paths import epoch_ms_to_iso
+        for record in session.records:
+            if not isinstance(record, dict) or "role" not in record:
+                continue
+            role = str(record.get("role") or "")
+            if role not in ("user", "assistant"):
+                continue
+            parts = record.get("parts")
+            if not isinstance(parts, list):
+                continue
+            text_parts = [p for p in parts if isinstance(p, dict) and p.get("kind") == "text"]
+            text = "\n\n".join(str(p.get("text") or "") for p in text_parts if p.get("text"))
+            if not text:
+                continue
+            ts = record.get("ts")
+            timestamp = epoch_ms_to_iso(int(ts)) if isinstance(ts, (int, float)) and ts else session.timestamp
+            if role == "assistant":
+                messages.append(TextMessage("assistant", text, timestamp, provider="freebuff"))
+            else:
+                contextual = self._is_contextual(text)
+                messages.append(TextMessage("user", text, timestamp, is_contextual=contextual))
+        return messages
+
     _WINDSURF_CONTEXTUAL_MARKERS: tuple[str, ...] = (
         "You are a tool-calling assistant",
         "Available tools",
@@ -903,6 +936,21 @@ def _count_grok_records(session_dir: Path) -> int:
         return -1
 
 
+def _count_freebuff_records(db_path: Path) -> int:
+    """Count message rows across all threads in a Freebuff project db."""
+    from session_sdk.stores import _freebuff_connect
+    try:
+        if not Path(db_path).is_file():
+            return -1
+        conn = _freebuff_connect(db_path)
+        try:
+            return int(conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0])
+        finally:
+            conn.close()
+    except Exception:
+        return -1
+
+
 class GrokRecordBuilder:
     """Build Grok Build session records: ACP update envelopes + summary.
 
@@ -969,6 +1017,56 @@ class GrokRecordBuilder:
                 "agent_name": agent_name,
             }
         })
+        return records
+
+
+class FreebuffRecordBuilder:
+    """Build Freebuff Desktop records (SQLite rows) from a TextMessage stream.
+
+    Emits a leading ``{"_thread": {...}}`` metadata record followed by one
+    ``{"seq", "role", "parts", "ts"}`` record per message.  ``FreebuffStore``
+    writes these into a project ``desktop-v2.db``.
+    """
+
+    def build(
+        self,
+        session_id: str,
+        cwd: str,
+        timestamp: str,
+        messages: list[TextMessage],
+        model_id: str = "",
+        title: str = "",
+    ) -> list[JsonObject]:
+        from session_sdk.paths import iso_to_epoch_ms
+
+        base_ms = iso_to_epoch_ms(timestamp) if timestamp else 0
+        records: list[JsonObject] = [{
+            "_thread": {
+                "id": session_id,
+                "project_id": cwd,
+                "project_path": cwd,
+                "title": title or "Imported session",
+                "status": "closed",
+                "model": model_id,
+                "created_at": base_ms,
+                "updated_at": base_ms,
+            }
+        }]
+        seq = 0
+        for message in messages:
+            if message.is_contextual:
+                continue
+            seq += 1
+            text = message.text
+            if message.is_compaction:
+                text = "[compaction summary] " + text
+            ts_ms = iso_to_epoch_ms(message.timestamp) if message.timestamp else base_ms + seq
+            records.append({
+                "seq": seq,
+                "role": "user" if message.role != "assistant" else "assistant",
+                "parts": [{"kind": "text", "text": text}],
+                "ts": ts_ms,
+            })
         return records
 
 
@@ -3250,6 +3348,590 @@ class WindsurfToGrokConverter:
 
     def write(self, plan: ConversionPlan, *, overwrite: bool = False) -> None:
         self._grok_store.write(plan.destination, plan.records, overwrite=overwrite)
+
+    @staticmethod
+    def _timestamp(timestamp: str) -> str:
+        if timestamp:
+            return timestamp
+        return datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+class FreebuffToPiConverter:
+    def __init__(self, freebuff_store: FreebuffStore, pi_store: PiStore, dcp_store: PiDcpStore, id_factory: SessionIdFactory) -> None:
+        self._freebuff_store = freebuff_store
+        self._pi_store = pi_store
+        self._dcp_store = dcp_store
+        self._id_factory = id_factory
+        self._extractor = MessageExtractor()
+        self._builder = PiRecordBuilder()
+
+    def plan(self, session_id: str, *, target_id: str | None = None) -> ConversionPlan:
+        source = self._freebuff_store.load(session_id)
+        resolved_id = target_id or self._id_factory.create(source.session_id)
+        timestamp = self._timestamp(source.timestamp)
+        messages = self._extractor.from_freebuff(source)
+        records = self._builder.build(resolved_id, source.cwd, timestamp, messages)
+        destination = self._pi_store.destination_path(resolved_id, timestamp, source.cwd)
+        dcp_path = self._dcp_store.destination_path(resolved_id)
+        return ConversionPlan(source, destination, records, (dcp_path,))
+
+    def has_changes(self, session_id: str) -> bool:
+        source_path = self._freebuff_store._find_path(session_id)
+        if source_path is None:
+            return True
+        destination = self._pi_store.destination_path(self._id_factory.create(session_id), self._timestamp(""), "")
+        if not destination.exists():
+            return True
+        return _count_freebuff_records(source_path) != _count_jsonl_records(destination)
+
+    def write(self, plan: ConversionPlan, *, overwrite: bool = False) -> None:
+        self._pi_store.write(plan.destination, plan.records, overwrite=overwrite)
+        for service_path in plan.services:
+            self._dcp_store.write_default(self._target_id(plan.destination), service_path, overwrite=overwrite)
+
+    @staticmethod
+    def _target_id(path: Path) -> str:
+        return path.stem.rsplit("_", 1)[-1]
+
+    @staticmethod
+    def _timestamp(timestamp: str) -> str:
+        if timestamp:
+            return timestamp
+        return datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+class PiToFreebuffConverter:
+    def __init__(self, pi_store: PiStore, freebuff_store: FreebuffStore, id_factory: SessionIdFactory) -> None:
+        self._pi_store = pi_store
+        self._freebuff_store = freebuff_store
+        self._id_factory = id_factory
+        self._extractor = MessageExtractor()
+        self._builder = FreebuffRecordBuilder()
+
+    def plan(self, session_id: str, *, target_id: str | None = None) -> ConversionPlan:
+        source = self._pi_store.load(session_id)
+        resolved_id = target_id or self._id_factory.create(source.session_id)
+        timestamp = self._timestamp(source.timestamp)
+        messages = self._extractor.from_pi(source)
+        records = self._builder.build(resolved_id, source.cwd, timestamp, messages)
+        destination = self._freebuff_store.destination_path(resolved_id, source.cwd)
+        return ConversionPlan(source, destination, records)
+
+    def has_changes(self, session_id: str) -> bool:
+        source_path = self._pi_store._find_path(session_id)
+        if source_path is None:
+            return True
+        destination = self._freebuff_store.destination_path(self._id_factory.create(session_id), "")
+        if destination.exists():
+            return _count_jsonl_records(source_path) != _count_freebuff_records(destination)
+        return True
+
+    def write(self, plan: ConversionPlan, *, overwrite: bool = False) -> None:
+        self._freebuff_store.write(plan.destination, plan.records, overwrite=overwrite)
+
+    @staticmethod
+    def _timestamp(timestamp: str) -> str:
+        if timestamp:
+            return timestamp
+        return datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+class FreebuffToCodexConverter:
+    def __init__(self, freebuff_store: FreebuffStore, codex_store: CodexStore, id_factory: SessionIdFactory) -> None:
+        self._freebuff_store = freebuff_store
+        self._codex_store = codex_store
+        self._id_factory = id_factory
+        self._extractor = MessageExtractor()
+        self._builder = CodexRecordBuilder()
+
+    def plan(self, session_id: str, *, target_id: str | None = None) -> ConversionPlan:
+        source = self._freebuff_store.load(session_id)
+        resolved_id = target_id or self._id_factory.create(source.session_id)
+        timestamp = self._timestamp(source.timestamp)
+        messages = self._extractor.from_freebuff(source)
+        records = self._builder.build(resolved_id, source.cwd, timestamp, messages)
+        destination = self._codex_store.destination_path(resolved_id, timestamp)
+        return ConversionPlan(source, destination, records)
+
+    def has_changes(self, session_id: str) -> bool:
+        source_path = self._freebuff_store._find_path(session_id)
+        if source_path is None:
+            return True
+        destination = self._codex_store.destination_path(self._id_factory.create(session_id), self._timestamp(""))
+        if not destination.exists():
+            return True
+        return _count_freebuff_records(source_path) != _count_jsonl_records(destination)
+
+    def write(self, plan: ConversionPlan, *, overwrite: bool = False) -> None:
+        self._codex_store.write(plan.destination, plan.records, overwrite=overwrite)
+
+    @staticmethod
+    def _timestamp(timestamp: str) -> str:
+        if timestamp:
+            return timestamp
+        return datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+class CodexToFreebuffConverter:
+    def __init__(self, codex_store: CodexStore, freebuff_store: FreebuffStore, id_factory: SessionIdFactory) -> None:
+        self._codex_store = codex_store
+        self._freebuff_store = freebuff_store
+        self._id_factory = id_factory
+        self._extractor = MessageExtractor()
+        self._builder = FreebuffRecordBuilder()
+
+    def plan(self, session_id: str, *, target_id: str | None = None) -> ConversionPlan:
+        source = self._codex_store.load(session_id)
+        resolved_id = target_id or self._id_factory.create(source.session_id)
+        timestamp = self._timestamp(source.timestamp)
+        messages = self._extractor.from_codex(source)
+        records = self._builder.build(resolved_id, source.cwd, timestamp, messages)
+        destination = self._freebuff_store.destination_path(resolved_id, source.cwd)
+        return ConversionPlan(source, destination, records)
+
+    def has_changes(self, session_id: str) -> bool:
+        source_path = self._codex_store._find_path(session_id)
+        if source_path is None:
+            return True
+        destination = self._freebuff_store.destination_path(self._id_factory.create(session_id), "")
+        if destination.exists():
+            return _count_jsonl_records(source_path) != _count_freebuff_records(destination)
+        return True
+
+    def write(self, plan: ConversionPlan, *, overwrite: bool = False) -> None:
+        self._freebuff_store.write(plan.destination, plan.records, overwrite=overwrite)
+
+    @staticmethod
+    def _timestamp(timestamp: str) -> str:
+        if timestamp:
+            return timestamp
+        return datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+class FreebuffToOpenCodeConverter:
+    def __init__(self, freebuff_store: FreebuffStore, opencode_store: OpenCodeStore, id_factory: SessionIdFactory) -> None:
+        self._freebuff_store = freebuff_store
+        self._opencode_store = opencode_store
+        self._id_factory = id_factory
+        self._extractor = MessageExtractor()
+        self._builder = OpenCodeExportBuilder()
+
+    def plan(self, session_id: str, *, target_id: str | None = None) -> ConversionPlan:
+        source = self._freebuff_store.load(session_id)
+        resolved_id = target_id or self._id_factory.create(source.session_id)
+        timestamp = self._timestamp(source.timestamp)
+        messages = self._extractor.from_freebuff(source)
+        records = self._builder.build(resolved_id, source.cwd, timestamp, messages)
+        destination = self._opencode_store.destination_path(resolved_id)
+        return ConversionPlan(source, destination, records)
+
+    def has_changes(self, session_id: str) -> bool:
+        source_path = self._freebuff_store._find_path(session_id)
+        if source_path is None:
+            return True
+        destination = self._opencode_store.destination_path(self._id_factory.create(session_id))
+        if not destination.exists():
+            return True
+        return _count_freebuff_records(source_path) != _count_opencode_records(destination)
+
+    def write(self, plan: ConversionPlan, *, overwrite: bool = False) -> None:
+        self._opencode_store.write(plan.destination, plan.records, overwrite=overwrite)
+
+    @staticmethod
+    def _timestamp(timestamp: str) -> str:
+        if timestamp:
+            return timestamp
+        return datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+class OpenCodeToFreebuffConverter:
+    def __init__(self, opencode_store: OpenCodeStore, freebuff_store: FreebuffStore, id_factory: SessionIdFactory) -> None:
+        self._opencode_store = opencode_store
+        self._freebuff_store = freebuff_store
+        self._id_factory = id_factory
+        self._extractor = MessageExtractor()
+        self._builder = FreebuffRecordBuilder()
+
+    def plan(self, session_id: str, *, target_id: str | None = None) -> ConversionPlan:
+        source = self._opencode_store.load(session_id)
+        resolved_id = target_id or self._id_factory.create(source.session_id)
+        timestamp = self._timestamp(source.timestamp)
+        messages = self._extractor.from_opencode(source)
+        records = self._builder.build(resolved_id, source.cwd, timestamp, messages)
+        destination = self._freebuff_store.destination_path(resolved_id, source.cwd)
+        return ConversionPlan(source, destination, records)
+
+    def has_changes(self, session_id: str) -> bool:
+        source_path = self._opencode_store._find_path(session_id)
+        if source_path is None:
+            return True
+        destination = self._freebuff_store.destination_path(self._id_factory.create(session_id), "")
+        if destination.exists():
+            return _count_opencode_records(source_path) != _count_freebuff_records(destination)
+        return True
+
+    def write(self, plan: ConversionPlan, *, overwrite: bool = False) -> None:
+        self._freebuff_store.write(plan.destination, plan.records, overwrite=overwrite)
+
+    @staticmethod
+    def _timestamp(timestamp: str) -> str:
+        if timestamp:
+            return timestamp
+        return datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+class FreebuffToClaudeConverter:
+    def __init__(self, freebuff_store: FreebuffStore, claude_store: ClaudeStore, id_factory: SessionIdFactory) -> None:
+        self._freebuff_store = freebuff_store
+        self._claude_store = claude_store
+        self._id_factory = id_factory
+        self._extractor = MessageExtractor()
+        self._builder = ClaudeRecordBuilder()
+
+    def plan(self, session_id: str, *, target_id: str | None = None) -> ConversionPlan:
+        source = self._freebuff_store.load(session_id)
+        resolved_id = target_id or self._id_factory.create(source.session_id)
+        timestamp = self._timestamp(source.timestamp)
+        messages = self._extractor.from_freebuff(source)
+        records = self._builder.build(resolved_id, source.cwd, timestamp, messages)
+        destination = self._claude_store.destination_path(resolved_id, source.cwd)
+        return ConversionPlan(source, destination, records)
+
+    def has_changes(self, session_id: str) -> bool:
+        source_path = self._freebuff_store._find_path(session_id)
+        if source_path is None:
+            return True
+        destination = self._claude_store.destination_path(self._id_factory.create(session_id), "")
+        if not destination.exists():
+            return True
+        return _count_freebuff_records(source_path) != _count_jsonl_records(destination)
+
+    def write(self, plan: ConversionPlan, *, overwrite: bool = False) -> None:
+        self._claude_store.write(plan.destination, plan.records, overwrite=overwrite)
+
+    @staticmethod
+    def _timestamp(timestamp: str) -> str:
+        if timestamp:
+            return timestamp
+        return datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+class ClaudeToFreebuffConverter:
+    def __init__(self, claude_store: ClaudeStore, freebuff_store: FreebuffStore, id_factory: SessionIdFactory) -> None:
+        self._claude_store = claude_store
+        self._freebuff_store = freebuff_store
+        self._id_factory = id_factory
+        self._extractor = MessageExtractor()
+        self._builder = FreebuffRecordBuilder()
+
+    def plan(self, session_id: str, *, target_id: str | None = None) -> ConversionPlan:
+        source = self._claude_store.load(session_id)
+        resolved_id = target_id or self._id_factory.create(source.session_id)
+        timestamp = self._timestamp(source.timestamp)
+        messages = self._extractor.from_claude(source)
+        records = self._builder.build(resolved_id, source.cwd, timestamp, messages)
+        destination = self._freebuff_store.destination_path(resolved_id, source.cwd)
+        return ConversionPlan(source, destination, records)
+
+    def has_changes(self, session_id: str) -> bool:
+        source_path = self._claude_store._find_path(session_id)
+        if source_path is None:
+            return True
+        destination = self._freebuff_store.destination_path(self._id_factory.create(session_id), "")
+        if destination.exists():
+            return _count_jsonl_records(source_path) != _count_freebuff_records(destination)
+        return True
+
+    def write(self, plan: ConversionPlan, *, overwrite: bool = False) -> None:
+        self._freebuff_store.write(plan.destination, plan.records, overwrite=overwrite)
+
+    @staticmethod
+    def _timestamp(timestamp: str) -> str:
+        if timestamp:
+            return timestamp
+        return datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+class FreebuffToDevinConverter:
+    def __init__(self, freebuff_store: FreebuffStore, devin_store: DevinStore, id_factory: SessionIdFactory) -> None:
+        self._freebuff_store = freebuff_store
+        self._devin_store = devin_store
+        self._id_factory = id_factory
+        self._extractor = MessageExtractor()
+        self._builder = DevinRecordBuilder()
+
+    def plan(self, session_id: str, *, target_id: str | None = None) -> ConversionPlan:
+        source = self._freebuff_store.load(session_id)
+        resolved_id = target_id or self._id_factory.create(source.session_id)
+        timestamp = self._timestamp(source.timestamp)
+        messages = self._extractor.from_freebuff(source)
+        records = self._builder.build(resolved_id, source.cwd, timestamp, messages)
+        destination = self._devin_store.destination_path(resolved_id)
+        return ConversionPlan(source, destination, records)
+
+    def has_changes(self, session_id: str) -> bool:
+        source_path = self._freebuff_store._find_path(session_id)
+        if source_path is None:
+            return True
+        destination = self._devin_store.destination_path(self._id_factory.create(session_id))
+        if not destination.exists():
+            return True
+        return _count_freebuff_records(source_path) != _count_jsonl_records(destination)
+
+    def write(self, plan: ConversionPlan, *, overwrite: bool = False) -> None:
+        self._devin_store.write(plan.destination, plan.records, overwrite=overwrite)
+
+    @staticmethod
+    def _timestamp(timestamp: str) -> str:
+        if timestamp:
+            return timestamp
+        return datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+class DevinToFreebuffConverter:
+    def __init__(self, devin_store: DevinStore, freebuff_store: FreebuffStore, id_factory: SessionIdFactory) -> None:
+        self._devin_store = devin_store
+        self._freebuff_store = freebuff_store
+        self._id_factory = id_factory
+        self._extractor = MessageExtractor()
+        self._builder = FreebuffRecordBuilder()
+
+    def plan(self, session_id: str, *, target_id: str | None = None) -> ConversionPlan:
+        source = self._devin_store.load(session_id)
+        resolved_id = target_id or self._id_factory.create(source.session_id)
+        timestamp = self._timestamp(source.timestamp)
+        messages = self._extractor.from_devin(source)
+        records = self._builder.build(resolved_id, source.cwd, timestamp, messages)
+        destination = self._freebuff_store.destination_path(resolved_id, source.cwd)
+        return ConversionPlan(source, destination, records)
+
+    def has_changes(self, session_id: str) -> bool:
+        source_path = self._devin_store._find_path(session_id)
+        if source_path is None:
+            return True
+        destination = self._freebuff_store.destination_path(self._id_factory.create(session_id), "")
+        if destination.exists():
+            return _count_jsonl_records(source_path) != _count_freebuff_records(destination)
+        return True
+
+    def write(self, plan: ConversionPlan, *, overwrite: bool = False) -> None:
+        self._freebuff_store.write(plan.destination, plan.records, overwrite=overwrite)
+
+    @staticmethod
+    def _timestamp(timestamp: str) -> str:
+        if timestamp:
+            return timestamp
+        return datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+class FreebuffToFactoryConverter:
+    def __init__(self, freebuff_store: FreebuffStore, factory_store: FactoryStore, id_factory: SessionIdFactory) -> None:
+        self._freebuff_store = freebuff_store
+        self._factory_store = factory_store
+        self._id_factory = id_factory
+        self._extractor = MessageExtractor()
+        self._builder = FactoryRecordBuilder()
+
+    def plan(self, session_id: str, *, target_id: str | None = None) -> ConversionPlan:
+        source = self._freebuff_store.load(session_id)
+        resolved_id = target_id or self._id_factory.create(source.session_id)
+        timestamp = self._timestamp(source.timestamp)
+        messages = self._extractor.from_freebuff(source)
+        records = self._builder.build(resolved_id, source.cwd, timestamp, messages)
+        destination = self._factory_store.destination_path(resolved_id, source.cwd)
+        return ConversionPlan(source, destination, records)
+
+    def has_changes(self, session_id: str) -> bool:
+        source_path = self._freebuff_store._find_path(session_id)
+        if source_path is None:
+            return True
+        destination = self._factory_store.destination_path(self._id_factory.create(session_id), "")
+        if not destination.exists():
+            return True
+        return _count_freebuff_records(source_path) != _count_jsonl_records(destination)
+
+    def write(self, plan: ConversionPlan, *, overwrite: bool = False) -> None:
+        self._factory_store.write(plan.destination, plan.records, overwrite=overwrite)
+
+    @staticmethod
+    def _timestamp(timestamp: str) -> str:
+        if timestamp:
+            return timestamp
+        return datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+class FactoryToFreebuffConverter:
+    def __init__(self, factory_store: FactoryStore, freebuff_store: FreebuffStore, id_factory: SessionIdFactory) -> None:
+        self._factory_store = factory_store
+        self._freebuff_store = freebuff_store
+        self._id_factory = id_factory
+        self._extractor = MessageExtractor()
+        self._builder = FreebuffRecordBuilder()
+
+    def plan(self, session_id: str, *, target_id: str | None = None) -> ConversionPlan:
+        source = self._factory_store.load(session_id)
+        resolved_id = target_id or self._id_factory.create(source.session_id)
+        timestamp = self._timestamp(source.timestamp)
+        messages = self._extractor.from_factory(source)
+        records = self._builder.build(resolved_id, source.cwd, timestamp, messages)
+        destination = self._freebuff_store.destination_path(resolved_id, source.cwd)
+        return ConversionPlan(source, destination, records)
+
+    def has_changes(self, session_id: str) -> bool:
+        source_path = self._factory_store._find_path(session_id)
+        if source_path is None:
+            return True
+        destination = self._freebuff_store.destination_path(self._id_factory.create(session_id), "")
+        if destination.exists():
+            return _count_jsonl_records(source_path) != _count_freebuff_records(destination)
+        return True
+
+    def write(self, plan: ConversionPlan, *, overwrite: bool = False) -> None:
+        self._freebuff_store.write(plan.destination, plan.records, overwrite=overwrite)
+
+    @staticmethod
+    def _timestamp(timestamp: str) -> str:
+        if timestamp:
+            return timestamp
+        return datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+class FreebuffToWindsurfConverter:
+    def __init__(self, freebuff_store: FreebuffStore, windsurf_store: WindsurfStore, id_factory: SessionIdFactory) -> None:
+        self._freebuff_store = freebuff_store
+        self._windsurf_store = windsurf_store
+        self._id_factory = id_factory
+        self._extractor = MessageExtractor()
+        self._builder = WindsurfRecordBuilder()
+
+    def plan(self, session_id: str, *, target_id: str | None = None) -> ConversionPlan:
+        source = self._freebuff_store.load(session_id)
+        resolved_id = target_id or self._id_factory.create(source.session_id)
+        timestamp = self._timestamp(source.timestamp)
+        messages = self._extractor.from_freebuff(source)
+        records = self._builder.build(resolved_id, source.cwd, timestamp, messages)
+        destination = self._windsurf_store.destination_path(resolved_id)
+        return ConversionPlan(source, destination, records)
+
+    def has_changes(self, session_id: str) -> bool:
+        source_path = self._freebuff_store._find_path(session_id)
+        if source_path is None:
+            return True
+        destination = self._windsurf_store.destination_path(self._id_factory.create(session_id))
+        if not destination.exists():
+            return True
+        return _count_freebuff_records(source_path) != _count_jsonl_records(destination)
+
+    def write(self, plan: ConversionPlan, *, overwrite: bool = False) -> None:
+        self._windsurf_store.write(plan.destination, plan.records, overwrite=overwrite)
+
+    @staticmethod
+    def _timestamp(timestamp: str) -> str:
+        if timestamp:
+            return timestamp
+        return datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+class WindsurfToFreebuffConverter:
+    def __init__(self, windsurf_store: WindsurfStore, freebuff_store: FreebuffStore, id_factory: SessionIdFactory) -> None:
+        self._windsurf_store = windsurf_store
+        self._freebuff_store = freebuff_store
+        self._id_factory = id_factory
+        self._extractor = MessageExtractor()
+        self._builder = FreebuffRecordBuilder()
+
+    def plan(self, session_id: str, *, target_id: str | None = None) -> ConversionPlan:
+        source = self._windsurf_store.load(session_id)
+        resolved_id = target_id or self._id_factory.create(source.session_id)
+        timestamp = self._timestamp(source.timestamp)
+        messages = self._extractor.from_windsurf(source)
+        records = self._builder.build(resolved_id, source.cwd, timestamp, messages)
+        destination = self._freebuff_store.destination_path(resolved_id, source.cwd)
+        return ConversionPlan(source, destination, records)
+
+    def has_changes(self, session_id: str) -> bool:
+        source_path = self._windsurf_store._find_path(session_id)
+        if source_path is None:
+            return True
+        destination = self._freebuff_store.destination_path(self._id_factory.create(session_id), "")
+        if destination.exists():
+            return _count_jsonl_records(source_path) != _count_freebuff_records(destination)
+        return True
+
+    def write(self, plan: ConversionPlan, *, overwrite: bool = False) -> None:
+        self._freebuff_store.write(plan.destination, plan.records, overwrite=overwrite)
+
+    @staticmethod
+    def _timestamp(timestamp: str) -> str:
+        if timestamp:
+            return timestamp
+        return datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+class FreebuffToGrokConverter:
+    def __init__(self, freebuff_store: FreebuffStore, grok_store: GrokStore, id_factory: SessionIdFactory) -> None:
+        self._freebuff_store = freebuff_store
+        self._grok_store = grok_store
+        self._id_factory = id_factory
+        self._extractor = MessageExtractor()
+        self._builder = GrokRecordBuilder()
+
+    def plan(self, session_id: str, *, target_id: str | None = None) -> ConversionPlan:
+        source = self._freebuff_store.load(session_id)
+        resolved_id = target_id or self._id_factory.create(source.session_id)
+        timestamp = self._timestamp(source.timestamp)
+        messages = self._extractor.from_freebuff(source)
+        records = self._builder.build(resolved_id, source.cwd, timestamp, messages)
+        destination = self._grok_store.destination_path(resolved_id, source.cwd)
+        return ConversionPlan(source, destination, records)
+
+    def has_changes(self, session_id: str) -> bool:
+        source_path = self._freebuff_store._find_path(session_id)
+        if source_path is None:
+            return True
+        destination = self._grok_store.destination_path(self._id_factory.create(session_id), "")
+        if destination.exists():
+            return _count_freebuff_records(source_path) != _count_grok_records(destination)
+        return True
+
+    def write(self, plan: ConversionPlan, *, overwrite: bool = False) -> None:
+        self._grok_store.write(plan.destination, plan.records, overwrite=overwrite)
+
+    @staticmethod
+    def _timestamp(timestamp: str) -> str:
+        if timestamp:
+            return timestamp
+        return datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+class GrokToFreebuffConverter:
+    def __init__(self, grok_store: GrokStore, freebuff_store: FreebuffStore, id_factory: SessionIdFactory) -> None:
+        self._grok_store = grok_store
+        self._freebuff_store = freebuff_store
+        self._id_factory = id_factory
+        self._extractor = MessageExtractor()
+        self._builder = FreebuffRecordBuilder()
+
+    def plan(self, session_id: str, *, target_id: str | None = None) -> ConversionPlan:
+        source = self._grok_store.load(session_id)
+        resolved_id = target_id or self._id_factory.create(source.session_id)
+        timestamp = self._timestamp(source.timestamp)
+        messages = self._extractor.from_grok(source)
+        records = self._builder.build(resolved_id, source.cwd, timestamp, messages)
+        destination = self._freebuff_store.destination_path(resolved_id, source.cwd)
+        return ConversionPlan(source, destination, records)
+
+    def has_changes(self, session_id: str) -> bool:
+        source_path = self._grok_store._find_path(session_id)
+        if source_path is None:
+            return True
+        destination = self._freebuff_store.destination_path(self._id_factory.create(session_id), "")
+        if destination.exists():
+            return _count_grok_records(source_path) != _count_freebuff_records(destination)
+        return True
+
+    def write(self, plan: ConversionPlan, *, overwrite: bool = False) -> None:
+        self._freebuff_store.write(plan.destination, plan.records, overwrite=overwrite)
 
     @staticmethod
     def _timestamp(timestamp: str) -> str:

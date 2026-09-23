@@ -14,14 +14,14 @@ python -m unisessions list <provider> [--workers N]
 
 | Argument | Description |
 |---|---|
-| `provider` | Required. One of `codex`, `pi`, `opencode`, `claude`, `devin`, `factory`, `windsurf`, `grok`. |
+| `provider` | Required. One of `codex`, `pi`, `opencode`, `claude`, `devin`, `factory`, `windsurf`, `grok`, `freebuff`. |
 | `--workers N` | Parallel listing workers (default: 1). |
 
 Output is tab-separated: provider, session ID, timestamp, message count, cwd, file path.
 
 ### Single-Session Conversion
 
-56 conversion commands, one for each ordered pair of tools:
+72 conversion commands, one for each ordered pair of tools:
 
 ```bash
 python -m unisessions <source>-to-<target> <session-id> [flags]
@@ -85,6 +85,22 @@ python -m unisessions <source>-to-<target> <session-id> [flags]
 | `factory-to-grok` | Factory | Grok Build |
 | `grok-to-windsurf` | Grok Build | Windsurf |
 | `windsurf-to-grok` | Windsurf | Grok Build |
+| `freebuff-to-pi` | Freebuff Desktop | Pi |
+| `pi-to-freebuff` | Pi | Freebuff Desktop |
+| `freebuff-to-codex` | Freebuff Desktop | Codex |
+| `codex-to-freebuff` | Codex | Freebuff Desktop |
+| `freebuff-to-opencode` | Freebuff Desktop | OpenCode |
+| `opencode-to-freebuff` | OpenCode | Freebuff Desktop |
+| `freebuff-to-claude` | Freebuff Desktop | Claude Code |
+| `claude-to-freebuff` | Claude Code | Freebuff Desktop |
+| `freebuff-to-devin` | Freebuff Desktop | Devin |
+| `devin-to-freebuff` | Devin | Freebuff Desktop |
+| `freebuff-to-factory` | Freebuff Desktop | Factory |
+| `factory-to-freebuff` | Factory | Freebuff Desktop |
+| `freebuff-to-windsurf` | Freebuff Desktop | Windsurf |
+| `windsurf-to-freebuff` | Windsurf | Freebuff Desktop |
+| `freebuff-to-grok` | Freebuff Desktop | Grok Build |
+| `grok-to-freebuff` | Grok Build | Freebuff Desktop |
 
 #### Flags
 
@@ -109,12 +125,12 @@ python -m unisessions codex-to-pi-all [--write] [--workers N] [--on-conflict MOD
 Bulk export all Codex sessions to one or more targets.
 
 ```bash
-python -m unisessions export-all --targets pi opencode claude devin factory windsurf grok [--write] [--workers N] [--on-conflict MODE]
+python -m unisessions export-all --targets pi opencode claude devin factory windsurf grok freebuff [--write] [--workers N] [--on-conflict MODE]
 ```
 
 | Flag | Description |
 |---|---|
-| `--targets {pi,opencode,claude,devin,factory,windsurf,grok} [...]` | Target formats. Default: `pi`. |
+| `--targets {pi,opencode,claude,devin,factory,windsurf,grok,freebuff} [...]` | Target formats. Default: `pi`. |
 | `--write` | Write converted sessions. Without this, prints a dry-run summary. |
 | `--workers N` | Parallel workers (default: 8). |
 | `--overwrite` | Alias for `--on-conflict overwrite`. |
@@ -131,7 +147,7 @@ python -m unisessions to-trace <provider> <session-id> --format <format> [--writ
 
 | Argument | Description |
 |---|---|
-| `provider` | Source provider: `codex`, `pi`, `opencode`, `claude`, `devin`, `factory`, `windsurf`, `grok`. |
+| `provider` | Source provider: `codex`, `pi`, `opencode`, `claude`, `devin`, `factory`, `windsurf`, `grok`, `freebuff`. |
 | `session_id` | Session ID to export. |
 | `--format` | Trace format: `sts` (default), `openai`, `sharegpt`. |
 | `--output`, `-o` | Output file path (required with `--write`). |
@@ -177,6 +193,8 @@ All commands accept these flags to override system default paths:
 | `--windsurf-session-dir` | `<windsurf-home>/cascade` | Root containing Windsurf Cascade `.pb` files. |
 | `--grok-home` | `$GROK_HOME` or `<home>/.grok` | Grok Build home root. |
 | `--grok-session-dir` | `<grok-home>/sessions` | Root containing Grok session directories (each with `updates.jsonl` + `summary.json`). |
+| `--freebuff-home` | `$FREEBUFF_CONFIG_DIR` or `<home>/.config/freebuff-desktop` | Freebuff Desktop home root. |
+| `--freebuff-session-dir` | `<freebuff-home>/projects` | Root containing Freebuff project directories (each with `desktop-v2.db`). |
 
 When a session directory override is provided, the store scans that directory directly instead of the tool's default location. This is useful for testing, custom installations, or working with exported session archives.
 

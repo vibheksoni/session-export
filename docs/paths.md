@@ -27,6 +27,7 @@ defaults = WindowsDefaults(home=Path("/custom/home"))
 | `devin_home` | Windows: `%APPDATA%/devin`, Linux: `~/.config/devin` | `DEVIN_CONFIG_DIR` |
 | `windsurf_home` | `<home>/.codeium/windsurf` | `WINDSURF_CONFIG_DIR` |
 | `grok_home` | `<home>/.grok` | `GROK_HOME` |
+| `freebuff_home` | `<home>/.config/freebuff-desktop` | `FREEBUFF_CONFIG_DIR` |
 | `opencode_session_dir` | `<opencode_data_home>/session-export` | -- |
 
 ### Platform Behavior
@@ -36,6 +37,8 @@ defaults = WindowsDefaults(home=Path("/custom/home"))
 - **Linux/other**: `$XDG_DATA_HOME/opencode` (or `~/.local/share/opencode` as fallback).
 
 `claude_home` checks `CLAUDE_CONFIG_DIR` first, then falls back to `<home>/.claude`.
+
+`freebuff_home` checks `FREEBUFF_CONFIG_DIR` first, then falls back to `<home>/.config/freebuff-desktop`.
 
 ## SessionIdFactory
 

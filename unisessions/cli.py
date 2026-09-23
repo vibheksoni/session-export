@@ -10,6 +10,7 @@ from session_sdk.converters import (
     ClaudeToCodexConverter,
     ClaudeToDevinConverter,
     ClaudeToFactoryConverter,
+    ClaudeToFreebuffConverter,
     ClaudeToGrokConverter,
     ClaudeToOpenCodeConverter,
     ClaudeToPiConverter,
@@ -17,6 +18,7 @@ from session_sdk.converters import (
     CodexToClaudeConverter,
     CodexToDevinConverter,
     CodexToFactoryConverter,
+    CodexToFreebuffConverter,
     CodexToGrokConverter,
     CodexToOpenCodeConverter,
     CodexToPiConverter,
@@ -24,6 +26,7 @@ from session_sdk.converters import (
     DevinToClaudeConverter,
     DevinToCodexConverter,
     DevinToFactoryConverter,
+    DevinToFreebuffConverter,
     DevinToGrokConverter,
     DevinToOpenCodeConverter,
     DevinToPiConverter,
@@ -33,11 +36,20 @@ from session_sdk.converters import (
     FactoryToDevinConverter,
     FactoryToOpenCodeConverter,
     FactoryToPiConverter,
+    FactoryToFreebuffConverter,
     FactoryToGrokConverter,
     FactoryToWindsurfConverter,
     OpenCodeToClaudeConverter,
     OpenCodeToCodexConverter,
     OpenCodeToDevinConverter,
+    FreebuffToClaudeConverter,
+    FreebuffToCodexConverter,
+    FreebuffToDevinConverter,
+    FreebuffToFactoryConverter,
+    FreebuffToGrokConverter,
+    FreebuffToOpenCodeConverter,
+    FreebuffToPiConverter,
+    FreebuffToWindsurfConverter,
     GrokToClaudeConverter,
     GrokToCodexConverter,
     GrokToDevinConverter,
@@ -46,6 +58,7 @@ from session_sdk.converters import (
     GrokToPiConverter,
     GrokToWindsurfConverter,
     OpenCodeToFactoryConverter,
+    OpenCodeToFreebuffConverter,
     OpenCodeToGrokConverter,
     OpenCodeToPiConverter,
     OpenCodeToWindsurfConverter,
@@ -53,6 +66,7 @@ from session_sdk.converters import (
     PiToCodexConverter,
     PiToDevinConverter,
     PiToFactoryConverter,
+    PiToFreebuffConverter,
     PiToGrokConverter,
     PiToOpenCodeConverter,
     PiToWindsurfConverter,
@@ -60,13 +74,14 @@ from session_sdk.converters import (
     WindsurfToCodexConverter,
     WindsurfToDevinConverter,
     WindsurfToFactoryConverter,
+    WindsurfToFreebuffConverter,
     WindsurfToGrokConverter,
     WindsurfToOpenCodeConverter,
     WindsurfToPiConverter,
 )
 from session_sdk.models import ConversionPlan, SessionSummary
 from session_sdk.paths import SessionIdFactory, WindowsDefaults
-from session_sdk.stores import ClaudeStore, CodexStore, DevinStore, FactoryStore, GrokStore, OpenCodeStore, PiDcpStore, PiStore, WindsurfStore
+from session_sdk.stores import ClaudeStore, CodexStore, DevinStore, FactoryStore, FreebuffStore, GrokStore, OpenCodeStore, PiDcpStore, PiStore, WindsurfStore
 from session_sdk.traces import TRACE_FORMATS, build_trace
 from session_sdk.converters import MessageExtractor
 
@@ -111,15 +126,19 @@ class CliApp:
             Path(args.grok_home or defaults.grok_home),
             self._optional_path(args.grok_session_dir),
         )
+        freebuff = FreebuffStore(
+            Path(args.freebuff_home or defaults.freebuff_home),
+            self._optional_path(args.freebuff_session_dir),
+        )
 
         if args.command == "list":
-            store = {"codex": codex, "pi": pi, "opencode": opencode, "claude": claude, "devin": devin, "factory": factory, "windsurf": windsurf, "grok": grok}[args.provider]
+            store = {"codex": codex, "pi": pi, "opencode": opencode, "claude": claude, "devin": devin, "factory": factory, "windsurf": windsurf, "grok": grok, "freebuff": freebuff}[args.provider]
             summaries = store.list(workers=args.workers or 1)
             self._print_summaries(summaries)
             return 0
 
         if args.command == "to-trace":
-            return self._to_trace(args, codex, pi, opencode, claude, devin, factory, windsurf, grok)
+            return self._to_trace(args, codex, pi, opencode, claude, devin, factory, windsurf, grok, freebuff)
 
         id_factory = SessionIdFactory(preserve_ids=not args.new_id)
         if args.command in ("codex-to-pi", "pi-to-codex", "codex-to-opencode",
@@ -140,8 +159,14 @@ class CliApp:
                             "grok-to-pi", "grok-to-codex", "grok-to-opencode",
                             "grok-to-claude", "grok-to-devin", "grok-to-factory", "grok-to-windsurf",
                             "pi-to-grok", "codex-to-grok", "opencode-to-grok",
-                            "claude-to-grok", "devin-to-grok", "factory-to-grok", "windsurf-to-grok"):
-            return self._single_convert(args, codex, pi, dcp, opencode, claude, devin, factory, windsurf, grok, id_factory)
+                            "claude-to-grok", "devin-to-grok", "factory-to-grok", "windsurf-to-grok",
+                            "freebuff-to-pi", "freebuff-to-codex", "freebuff-to-opencode",
+                            "freebuff-to-claude", "freebuff-to-devin", "freebuff-to-factory",
+                            "freebuff-to-windsurf", "freebuff-to-grok",
+                            "pi-to-freebuff", "codex-to-freebuff", "opencode-to-freebuff",
+                            "claude-to-freebuff", "devin-to-freebuff", "factory-to-freebuff",
+                            "windsurf-to-freebuff", "grok-to-freebuff"):
+            return self._single_convert(args, codex, pi, dcp, opencode, claude, devin, factory, windsurf, grok, freebuff, id_factory)
 
         if args.command == "codex-to-pi-all":
             return self._bulk_export(codex, pi, dcp, opencode, id_factory, args, targets=["pi"])
@@ -171,10 +196,12 @@ class CliApp:
         parser.add_argument("--windsurf-session-dir", default=None)
         parser.add_argument("--grok-home", default=None)
         parser.add_argument("--grok-session-dir", default=None)
+        parser.add_argument("--freebuff-home", default=None)
+        parser.add_argument("--freebuff-session-dir", default=None)
         subparsers = parser.add_subparsers(dest="command", required=True)
 
         list_parser = subparsers.add_parser("list")
-        list_parser.add_argument("provider", choices=("codex", "pi", "opencode", "claude", "devin", "factory", "windsurf", "grok"))
+        list_parser.add_argument("provider", choices=("codex", "pi", "opencode", "claude", "devin", "factory", "windsurf", "grok", "freebuff"))
         list_parser.add_argument("--workers", type=int, default=None, help="Number of parallel workers for listing (default: 1).")
 
         codex_to_pi = subparsers.add_parser("codex-to-pi")
@@ -345,15 +372,63 @@ class CliApp:
         windsurf_to_grok = subparsers.add_parser("windsurf-to-grok")
         CliApp._add_convert_args(windsurf_to_grok)
 
+        freebuff_to_pi = subparsers.add_parser("freebuff-to-pi")
+        CliApp._add_convert_args(freebuff_to_pi)
+
+        pi_to_freebuff = subparsers.add_parser("pi-to-freebuff")
+        CliApp._add_convert_args(pi_to_freebuff)
+
+        freebuff_to_codex = subparsers.add_parser("freebuff-to-codex")
+        CliApp._add_convert_args(freebuff_to_codex)
+
+        codex_to_freebuff = subparsers.add_parser("codex-to-freebuff")
+        CliApp._add_convert_args(codex_to_freebuff)
+
+        freebuff_to_opencode = subparsers.add_parser("freebuff-to-opencode")
+        CliApp._add_convert_args(freebuff_to_opencode)
+
+        opencode_to_freebuff = subparsers.add_parser("opencode-to-freebuff")
+        CliApp._add_convert_args(opencode_to_freebuff)
+
+        freebuff_to_claude = subparsers.add_parser("freebuff-to-claude")
+        CliApp._add_convert_args(freebuff_to_claude)
+
+        claude_to_freebuff = subparsers.add_parser("claude-to-freebuff")
+        CliApp._add_convert_args(claude_to_freebuff)
+
+        freebuff_to_devin = subparsers.add_parser("freebuff-to-devin")
+        CliApp._add_convert_args(freebuff_to_devin)
+
+        devin_to_freebuff = subparsers.add_parser("devin-to-freebuff")
+        CliApp._add_convert_args(devin_to_freebuff)
+
+        freebuff_to_factory = subparsers.add_parser("freebuff-to-factory")
+        CliApp._add_convert_args(freebuff_to_factory)
+
+        factory_to_freebuff = subparsers.add_parser("factory-to-freebuff")
+        CliApp._add_convert_args(factory_to_freebuff)
+
+        freebuff_to_windsurf = subparsers.add_parser("freebuff-to-windsurf")
+        CliApp._add_convert_args(freebuff_to_windsurf)
+
+        windsurf_to_freebuff = subparsers.add_parser("windsurf-to-freebuff")
+        CliApp._add_convert_args(windsurf_to_freebuff)
+
+        freebuff_to_grok = subparsers.add_parser("freebuff-to-grok")
+        CliApp._add_convert_args(freebuff_to_grok)
+
+        grok_to_freebuff = subparsers.add_parser("grok-to-freebuff")
+        CliApp._add_convert_args(grok_to_freebuff)
+
         codex_to_pi_all = subparsers.add_parser("codex-to-pi-all")
         CliApp._add_bulk_args(codex_to_pi_all)
 
         export_all = subparsers.add_parser("export-all")
         CliApp._add_bulk_args(export_all)
-        export_all.add_argument("--targets", nargs="+", default=["pi"], choices=("pi", "opencode", "claude", "devin", "factory", "windsurf", "grok"))
+        export_all.add_argument("--targets", nargs="+", default=["pi"], choices=("pi", "opencode", "claude", "devin", "factory", "windsurf", "grok", "freebuff"))
 
         to_trace = subparsers.add_parser("to-trace")
-        to_trace.add_argument("provider", choices=("codex", "pi", "opencode", "claude", "devin", "factory", "windsurf", "grok"))
+        to_trace.add_argument("provider", choices=("codex", "pi", "opencode", "claude", "devin", "factory", "windsurf", "grok", "freebuff"))
         to_trace.add_argument("session_id")
         to_trace.add_argument("--format", choices=TRACE_FORMATS, default="sts",
                               help="Trace format: sts (HuggingFace), openai (fine-tuning), or sharegpt.")
@@ -495,6 +570,7 @@ class CliApp:
         factory: FactoryStore,
         windsurf: WindsurfStore,
         grok: GrokStore,
+        freebuff: FreebuffStore,
         id_factory: SessionIdFactory,
     ) -> int:
         converters = {
@@ -554,6 +630,22 @@ class CliApp:
             "factory-to-grok": lambda: FactoryToGrokConverter(factory, grok, id_factory),
             "grok-to-windsurf": lambda: GrokToWindsurfConverter(grok, windsurf, id_factory),
             "windsurf-to-grok": lambda: WindsurfToGrokConverter(windsurf, grok, id_factory),
+            "freebuff-to-pi": lambda: FreebuffToPiConverter(freebuff, pi, dcp, id_factory),
+            "pi-to-freebuff": lambda: PiToFreebuffConverter(pi, freebuff, id_factory),
+            "freebuff-to-codex": lambda: FreebuffToCodexConverter(freebuff, codex, id_factory),
+            "codex-to-freebuff": lambda: CodexToFreebuffConverter(codex, freebuff, id_factory),
+            "freebuff-to-opencode": lambda: FreebuffToOpenCodeConverter(freebuff, opencode, id_factory),
+            "opencode-to-freebuff": lambda: OpenCodeToFreebuffConverter(opencode, freebuff, id_factory),
+            "freebuff-to-claude": lambda: FreebuffToClaudeConverter(freebuff, claude, id_factory),
+            "claude-to-freebuff": lambda: ClaudeToFreebuffConverter(claude, freebuff, id_factory),
+            "freebuff-to-devin": lambda: FreebuffToDevinConverter(freebuff, devin, id_factory),
+            "devin-to-freebuff": lambda: DevinToFreebuffConverter(devin, freebuff, id_factory),
+            "freebuff-to-factory": lambda: FreebuffToFactoryConverter(freebuff, factory, id_factory),
+            "factory-to-freebuff": lambda: FactoryToFreebuffConverter(factory, freebuff, id_factory),
+            "freebuff-to-windsurf": lambda: FreebuffToWindsurfConverter(freebuff, windsurf, id_factory),
+            "windsurf-to-freebuff": lambda: WindsurfToFreebuffConverter(windsurf, freebuff, id_factory),
+            "freebuff-to-grok": lambda: FreebuffToGrokConverter(freebuff, grok, id_factory),
+            "grok-to-freebuff": lambda: GrokToFreebuffConverter(grok, freebuff, id_factory),
         }
         converter = converters[args.command]()
         sid = args.session_id
@@ -602,8 +694,9 @@ class CliApp:
         factory: FactoryStore,
         windsurf: WindsurfStore,
         grok: GrokStore,
+        freebuff: FreebuffStore,
     ) -> int:
-        stores = {"codex": codex, "pi": pi, "opencode": opencode, "claude": claude, "devin": devin, "factory": factory, "windsurf": windsurf, "grok": grok}
+        stores = {"codex": codex, "pi": pi, "opencode": opencode, "claude": claude, "devin": devin, "factory": factory, "windsurf": windsurf, "grok": grok, "freebuff": freebuff}
         store = stores[args.provider]
         session = store.load(args.session_id)
         extractor = MessageExtractor()
@@ -616,6 +709,7 @@ class CliApp:
             "factory": extractor.from_factory,
             "windsurf": extractor.from_windsurf,
             "grok": extractor.from_grok,
+            "freebuff": extractor.from_freebuff,
         }
         messages = extractors[args.provider](session)
         records = build_trace(args.format, session, messages)

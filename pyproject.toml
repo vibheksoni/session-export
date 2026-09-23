@@ -1,7 +1,7 @@
 [project]
 name = "unisessions"
 version = "0.2.0"
-description = "Convert AI coding CLI sessions between Codex, Claude Code, Pi, OpenCode, Devin, Factory, Windsurf Cascade, and Grok Build. SDK, CLI, MCP chat recall, and trace export for fine-tuning."
+description = "Convert AI coding CLI sessions between Codex, Claude Code, Pi, OpenCode, Devin, Factory, Windsurf Cascade, Grok Build, and Freebuff Desktop. SDK, CLI, MCP chat recall, and trace export for fine-tuning."
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.11"
@@ -31,6 +31,9 @@ keywords = [
     "grok",
     "grok-build",
     "xai",
+    "freebuff",
+    "freebuff-desktop",
+    "codebuff",
 ]
 classifiers = [
     "Development Status :: 4 - Beta",

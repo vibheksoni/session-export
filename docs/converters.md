@@ -35,7 +35,7 @@ class ConversionPlan:
     services: tuple[Path, ...]  # DCP sidecar paths (Pi targets only)
 ```
 
-## All 56 Converters
+## All 72 Converters
 
 ### CodexToPiConverter
 
@@ -341,18 +341,147 @@ WindsurfToGrokConverter(windsurf_store, grok_store, id_factory)
 
 Converts Windsurf Cascade encrypted protobuf to Grok Build ACP `updates.jsonl` + `summary.json`. Uses `GrokRecordBuilder`.
 
+### FreebuffToPiConverter
+
+```python
+FreebuffToPiConverter(freebuff_store, pi_store, dcp_store, id_factory)
+```
+
+Converts Freebuff Desktop per-project SQLite sessions to Pi session JSONL. Extracts text via `MessageExtractor.from_freebuff` (only `text` parts) and writes a DCP sidecar.
+
+### PiToFreebuffConverter
+
+```python
+PiToFreebuffConverter(pi_store, freebuff_store, id_factory)
+```
+
+Converts Pi session JSONL to a Freebuff Desktop project DB (`desktop-v2.db` + `project.json`). Uses `FreebuffRecordBuilder`.
+
+### FreebuffToCodexConverter
+
+```python
+FreebuffToCodexConverter(freebuff_store, codex_store, id_factory)
+```
+
+Converts Freebuff Desktop per-project SQLite sessions to Codex rollout JSONL. Uses `CodexRecordBuilder` (default `model_provider="session-export-import"`).
+
+### CodexToFreebuffConverter
+
+```python
+CodexToFreebuffConverter(codex_store, freebuff_store, id_factory)
+```
+
+Converts Codex rollout JSONL to a Freebuff Desktop project DB. Uses `FreebuffRecordBuilder`.
+
+### FreebuffToOpenCodeConverter
+
+```python
+FreebuffToOpenCodeConverter(freebuff_store, opencode_store, id_factory)
+```
+
+Converts Freebuff Desktop per-project SQLite sessions to OpenCode export JSON.
+
+### OpenCodeToFreebuffConverter
+
+```python
+OpenCodeToFreebuffConverter(opencode_store, freebuff_store, id_factory)
+```
+
+Converts OpenCode export JSON to a Freebuff Desktop project DB. Uses `FreebuffRecordBuilder`.
+
+### FreebuffToClaudeConverter
+
+```python
+FreebuffToClaudeConverter(freebuff_store, claude_store, id_factory)
+```
+
+Converts Freebuff Desktop per-project SQLite sessions to Claude Code session JSONL. Uses `ClaudeRecordBuilder`.
+
+### ClaudeToFreebuffConverter
+
+```python
+ClaudeToFreebuffConverter(claude_store, freebuff_store, id_factory)
+```
+
+Converts Claude Code session JSONL to a Freebuff Desktop project DB. Uses `FreebuffRecordBuilder`.
+
+### FreebuffToDevinConverter
+
+```python
+FreebuffToDevinConverter(freebuff_store, devin_store, id_factory)
+```
+
+Converts Freebuff Desktop per-project SQLite sessions to Devin ATIF transcript JSON.
+
+### DevinToFreebuffConverter
+
+```python
+DevinToFreebuffConverter(devin_store, freebuff_store, id_factory)
+```
+
+Converts Devin ATIF transcript JSON to a Freebuff Desktop project DB. Uses `FreebuffRecordBuilder`.
+
+### FreebuffToFactoryConverter
+
+```python
+FreebuffToFactoryConverter(freebuff_store, factory_store, id_factory)
+```
+
+Converts Freebuff Desktop per-project SQLite sessions to Factory JSONL transcript.
+
+### FactoryToFreebuffConverter
+
+```python
+FactoryToFreebuffConverter(factory_store, freebuff_store, id_factory)
+```
+
+Converts Factory JSONL transcript to a Freebuff Desktop project DB. Uses `FreebuffRecordBuilder`.
+
+### FreebuffToWindsurfConverter
+
+```python
+FreebuffToWindsurfConverter(freebuff_store, windsurf_store, id_factory)
+```
+
+Converts Freebuff Desktop per-project SQLite sessions to Windsurf Cascade encrypted protobuf. Uses `WindsurfRecordBuilder`.
+
+### WindsurfToFreebuffConverter
+
+```python
+WindsurfToFreebuffConverter(windsurf_store, freebuff_store, id_factory)
+```
+
+Converts Windsurf Cascade encrypted protobuf to a Freebuff Desktop project DB. Uses `FreebuffRecordBuilder`.
+
+### FreebuffToGrokConverter
+
+```python
+FreebuffToGrokConverter(freebuff_store, grok_store, id_factory)
+```
+
+Converts Freebuff Desktop per-project SQLite sessions to Grok Build ACP `updates.jsonl` + `summary.json`. Uses `GrokRecordBuilder`.
+
+### GrokToFreebuffConverter
+
+```python
+GrokToFreebuffConverter(grok_store, freebuff_store, id_factory)
+```
+
+Converts Grok Build ACP session directories to a Freebuff Desktop project DB. Uses `FreebuffRecordBuilder`.
+
 ## Conversion Matrix
 
-| Source \ Target | Codex | Pi | OpenCode | Claude | Devin | Factory | Windsurf | Grok |
-|---|---|---|---|---|---|---|---|---|
-| **Codex** | -- | CodexToPi | CodexToOpenCode | CodexToClaude | CodexToDevin | CodexToFactory | CodexToWindsurf | CodexToGrok |
-| **Pi** | PiToCodex | -- | PiToOpenCode | PiToClaude | PiToDevin | PiToFactory | PiToWindsurf | PiToGrok |
-| **OpenCode** | OpenCodeToCodex | OpenCodeToPi | -- | OpenCodeToClaude | OpenCodeToDevin | OpenCodeToFactory | OpenCodeToWindsurf | OpenCodeToGrok |
-| **Claude** | ClaudeToCodex | ClaudeToPi | ClaudeToOpenCode | -- | ClaudeToDevin | ClaudeToFactory | ClaudeToWindsurf | ClaudeToGrok |
-| **Devin** | DevinToCodex | DevinToPi | DevinToOpenCode | DevinToClaude | -- | DevinToFactory | DevinToWindsurf | DevinToGrok |
-| **Factory** | FactoryToCodex | FactoryToPi | FactoryToOpenCode | FactoryToClaude | FactoryToDevin | -- | FactoryToWindsurf | FactoryToGrok |
-| **Windsurf** | WindsurfToCodex | WindsurfToPi | WindsurfToOpenCode | WindsurfToClaude | WindsurfToDevin | WindsurfToFactory | -- | WindsurfToGrok |
-| **Grok** | GrokToCodex | GrokToPi | GrokToOpenCode | GrokToClaude | GrokToDevin | GrokToFactory | GrokToWindsurf | -- |
+| Source \ Target | Codex | Pi | OpenCode | Claude | Devin | Factory | Windsurf | Grok | Freebuff |
+|---|---|---|---|---|---|---|---|---|---|
+| **Codex** | -- | CodexToPi | CodexToOpenCode | CodexToClaude | CodexToDevin | CodexToFactory | CodexToWindsurf | CodexToGrok | CodexToFreebuff |
+| **Pi** | PiToCodex | -- | PiToOpenCode | PiToClaude | PiToDevin | PiToFactory | PiToWindsurf | PiToGrok | PiToFreebuff |
+| **OpenCode** | OpenCodeToCodex | OpenCodeToPi | -- | OpenCodeToClaude | OpenCodeToDevin | OpenCodeToFactory | OpenCodeToWindsurf | OpenCodeToGrok | OpenCodeToFreebuff |
+| **Claude** | ClaudeToCodex | ClaudeToPi | ClaudeToOpenCode | -- | ClaudeToDevin | ClaudeToFactory | ClaudeToWindsurf | ClaudeToGrok | ClaudeToFreebuff |
+| **Devin** | DevinToCodex | DevinToPi | DevinToOpenCode | DevinToClaude | -- | DevinToFactory | DevinToWindsurf | DevinToGrok | DevinToFreebuff |
+| **Factory** | FactoryToCodex | FactoryToPi | FactoryToOpenCode | FactoryToClaude | FactoryToDevin | -- | FactoryToWindsurf | FactoryToGrok | FactoryToFreebuff |
+| **Windsurf** | WindsurfToCodex | WindsurfToPi | WindsurfToOpenCode | WindsurfToClaude | WindsurfToDevin | WindsurfToFactory | -- | WindsurfToGrok | WindsurfToFreebuff |
+| **Grok** | GrokToCodex | GrokToPi | GrokToOpenCode | GrokToClaude | GrokToDevin | GrokToFactory | GrokToWindsurf | -- | GrokToFreebuff |
+| **Freebuff** | FreebuffToCodex | FreebuffToPi | FreebuffToOpenCode | FreebuffToClaude | FreebuffToDevin | FreebuffToFactory | FreebuffToWindsurf | FreebuffToGrok | -- |
 
 ## MessageExtractor
 
@@ -366,6 +495,7 @@ All converters share a single `MessageExtractor` instance that extracts `TextMes
 | `from_claude(session)` | Claude Code session JSONL |
 | `from_windsurf(session)` | Windsurf Cascade encrypted protobuf |
 | `from_grok(session)` | Grok Build ACP `updates.jsonl` (streamed chunks grouped by `messageId`) |
+| `from_freebuff(session)` | Freebuff Desktop per-project SQLite (`threads` + `messages` rows; only `kind="text"` parts) |
 
 ### Role Mapping
 
@@ -439,6 +569,14 @@ Builds Grok Build ACP session records with:
 - Full-text `ContentChunk` payloads (`content: {type: "text", text}`) — no chunk splitting needed for import
 - A leading `{"_summary": {...}}` marker record carrying flattened metadata that `GrokStore.write` turns into `summary.json`
 - Compaction summaries imported as `user_message_chunk` so the conversation stays readable in Grok's TUI
+
+### FreebuffRecordBuilder
+
+Builds Freebuff Desktop records (SQLite rows) with:
+- A leading `{"_thread": {...}}` metadata record (id, project_id, project_path, title, status, model, created_at/updated_at)
+- One `{"seq", "role", "parts", "ts"}` record per message; `parts` is a `[{"kind": "text", "text": ...}]` array
+- Compaction summaries prefixed with `[compaction summary]`
+- `FreebuffStore.write` persists the records into a project `desktop-v2.db` (`projects`/`threads`/`messages` tables) plus `project.json`
 
 ## See Also
 

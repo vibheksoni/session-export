@@ -8,7 +8,7 @@ The high-level search API that coordinates stores, the FTS5 index, and message e
 
 ```python
 from session_sdk.search import SessionSearchEngine
-from session_sdk.stores import CodexStore, PiStore, OpenCodeStore, ClaudeStore, DevinStore, FactoryStore, WindsurfStore, GrokStore
+from session_sdk.stores import CodexStore, PiStore, OpenCodeStore, ClaudeStore, DevinStore, FactoryStore, WindsurfStore, GrokStore, FreebuffStore
 from session_sdk.paths import WindowsDefaults
 
 defaults = WindowsDefaults()
@@ -21,6 +21,7 @@ engine = SessionSearchEngine(
     factory=FactoryStore(defaults.factory_home),
     windsurf=WindsurfStore(defaults.windsurf_home),
     grok=GrokStore(defaults.grok_home),
+    freebuff=FreebuffStore(defaults.freebuff_home),
     index_path=Path("/custom/search.sqlite"),  # None = in-memory
 )
 ```
@@ -29,7 +30,7 @@ engine = SessionSearchEngine(
 
 ```python
 engine.list_chats(
-    provider="all",        # "all", "codex", "pi", "opencode", "claude", "devin", "factory", "windsurf", "grok"
+    provider="all",        # "all", "codex", "pi", "opencode", "claude", "devin", "factory", "windsurf", "grok", "freebuff"
     cwd=None,              # filter by project path
     cwd_match="exact",     # "exact", "contains", "prefix"
     limit=100,
