@@ -1364,11 +1364,28 @@ class FreebuffStore(SessionStore):
         return None
 
     def destination_path(self, session_id: str, cwd: str) -> Path:
-        """Deterministic destination: {projects}/<slug(cwd)>-<id8>/desktop-v2.db."""
+        """Deterministic destination: {projects}/<slug(cwd)>-<project-id>/desktop-v2.db.
+
+        Freebuff Desktop resolves a project's thread database through the
+        project root's ``.freebuff/project-id`` file: when present, the app
+        reads ``projects/<slug>-<project-id>/desktop-v2.db`` and anything
+        written anywhere else is invisible to it.  Fall back to a
+        session-id suffix when the project root does not declare an id.
+        """
         from session_sdk.paths import opencode_slug
         from pathlib import PurePath
         base = PurePath(cwd).name if cwd else "imported"
         slug = opencode_slug(base)
+        project_id = None
+        if cwd:
+            pid_file = Path(cwd) / ".freebuff" / "project-id"
+            try:
+                if pid_file.is_file():
+                    project_id = pid_file.read_text(encoding="utf-8").strip()
+            except OSError:
+                pass
+        if project_id:
+            return self._active_session_root() / f"{slug}-{project_id}" / self._DB_NAME
         return self._active_session_root() / f"{slug}-{session_id[:8]}" / self._DB_NAME
 
     def write(self, path: Path, records: list[JsonObject], *, overwrite: bool = False) -> None:
@@ -1402,12 +1419,50 @@ class FreebuffStore(SessionStore):
         conn = _freebuff_connect(db_path, create=True)
         try:
             conn.executescript(_FREEBUFF_SCHEMA)
+            # When merging into an existing project db (e.g. the app's own
+            # database), continue the global message sequence to avoid
+            # PRIMARY KEY collisions with rows the app already wrote.
+            thread_id = str(thread.get("id") or db_path.parent.name)
+            # Re-writes are idempotent per thread: drop this thread's old
+            # message rows before inserting fresh ones.
+            try:
+                conn.execute("DELETE FROM messages WHERE thread_id = ?", (thread_id,))
+            except Exception:
+                pass
+            # Continue the global message sequence so rows from other
+            # threads (the app's own writes) keep their ids.
+            seq_offset = 0
+            try:
+                seq_offset = int(conn.execute("SELECT COALESCE(MAX(seq), 0) FROM messages").fetchone()[0])
+            except Exception:
+                seq_offset = 0
             project_path = str(thread.get("project_path") or "")
+            # Preserve the app's original project row (id, root_path,
+            # created_at) so imports do not move the project birthday.
+            try:
+                existing_project = conn.execute(
+                    "SELECT created_at FROM projects WHERE id = ?", (project_path,)
+                ).fetchone()
+            except Exception:
+                existing_project = None
+            if existing_project and not thread.get("_preserve_created_at") is False:
+                thread["created_at"] = existing_project[0]
+                if not thread.get("_created_at_set") is False:
+                    thread["_project_created_at"] = existing_project[0]
             conn.execute(
                 "INSERT OR REPLACE INTO projects (id, root_path, default_branch, created_at) VALUES (?,?,?,?)",
-                (project_path, project_path, "main", int(thread.get("created_at") or 0)),
+                (project_path, project_path, "main", int(existing_project[0] if existing_project else (thread.get("created_at") or 0))),
             )
-            thread_id = str(thread.get("id") or db_path.parent.name)
+            # Keep the original thread creation time when the thread already
+            # exists in the database (re-import preserves provenance).
+            try:
+                existing_thread = conn.execute(
+                    "SELECT created_at FROM threads WHERE id = ?", (thread_id,)
+                ).fetchone()
+            except Exception:
+                existing_thread = None
+            if existing_thread:
+                thread["created_at"] = existing_thread[0]
             conn.execute(
                 "INSERT OR REPLACE INTO threads (id, project_id, project_path, title, status, model, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?)",
                 (
@@ -1425,7 +1480,7 @@ class FreebuffStore(SessionStore):
                 conn.execute(
                     "INSERT INTO messages (seq, thread_id, role, parts_json, attachments_json, metrics_json, ts) VALUES (?,?,?,?,?,?,?)",
                     (
-                        index,
+                        seq_offset + index,
                         thread_id,
                         str(message.get("role") or "user"),
                         _json_dumps_default(message.get("parts") or [{"kind": "text", "text": ""}]),
