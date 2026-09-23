@@ -1046,7 +1046,7 @@ class FreebuffRecordBuilder:
                 "project_id": cwd,
                 "project_path": cwd,
                 "title": title or "Imported session",
-                "status": "closed",
+                "status": "open",
                 "model": model_id,
                 "created_at": base_ms,
                 "updated_at": base_ms,
