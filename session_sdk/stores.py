@@ -1464,7 +1464,7 @@ class FreebuffStore(SessionStore):
             if existing_thread:
                 thread["created_at"] = existing_thread[0]
             conn.execute(
-                "INSERT OR REPLACE INTO threads (id, project_id, project_path, title, status, model, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?)",
+                "INSERT OR REPLACE INTO threads (id, project_id, project_path, title, status, model, created_at, updated_at, last_prompt_at, last_turn_finished_at, last_turn_outcome, attention_revision, attention_acknowledged_revision, attention_reason, attention_at, turn_alive_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     thread_id,
                     project_path,
@@ -1474,6 +1474,14 @@ class FreebuffStore(SessionStore):
                     str(thread.get("model") or ""),
                     int(thread.get("created_at") or 0),
                     int(thread.get("updated_at") or 0),
+                    thread.get("last_prompt_at"),
+                    thread.get("last_turn_finished_at"),
+                    thread.get("last_turn_outcome") or "completed",
+                    int(thread.get("attention_revision") or 1),
+                    int(thread.get("attention_acknowledged_revision") or 1),
+                    thread.get("attention_reason") or "finished",
+                    thread.get("attention_at"),
+                    thread.get("turn_alive_at"),
                 ),
             )
             for index, message in enumerate(messages, start=1):
@@ -1659,6 +1667,14 @@ CREATE TABLE IF NOT EXISTS threads (
     branch         TEXT,
     worktree_path  TEXT,
     fork_source_thread_id TEXT,
+    last_prompt_at INTEGER,
+    last_turn_finished_at INTEGER,
+    last_turn_outcome TEXT,
+    attention_revision INTEGER NOT NULL DEFAULT 0,
+    attention_acknowledged_revision INTEGER NOT NULL DEFAULT 0,
+    attention_reason TEXT,
+    attention_at INTEGER,
+    turn_alive_at INTEGER,
     created_at     INTEGER NOT NULL,
     updated_at     INTEGER NOT NULL
 );

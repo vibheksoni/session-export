@@ -1040,6 +1040,22 @@ class FreebuffRecordBuilder:
         from session_sdk.paths import iso_to_epoch_ms
 
         base_ms = iso_to_epoch_ms(timestamp) if timestamp else 0
+        user_ts_ms: list[int] = []
+        all_ts_ms: list[int] = []
+        seq = 0
+        for message in messages:
+            if message.is_contextual:
+                continue
+            seq += 1
+            text = message.text
+            if message.is_compaction:
+                text = "[compaction summary] " + text
+            ts_ms = iso_to_epoch_ms(message.timestamp) if message.timestamp else base_ms + seq
+            all_ts_ms.append(ts_ms)
+            if message.role in ("user", "system"):
+                user_ts_ms.append(ts_ms)
+        last_prompt_at = max(user_ts_ms) if user_ts_ms else None
+        last_turn_finished_at = max(all_ts_ms) if all_ts_ms else None
         records: list[JsonObject] = [{
             "_thread": {
                 "id": session_id,
@@ -1050,9 +1066,16 @@ class FreebuffRecordBuilder:
                 "model": model_id,
                 "created_at": base_ms,
                 "updated_at": base_ms,
+                "last_prompt_at": last_prompt_at,
+                "last_turn_finished_at": last_turn_finished_at,
+                "last_turn_outcome": "completed",
+                "attention_revision": 1,
+                "attention_acknowledged_revision": 1,
+                "attention_reason": "finished",
+                "attention_at": last_turn_finished_at,
+                "turn_alive_at": last_turn_finished_at,
             }
         }]
-        seq = 0
         for message in messages:
             if message.is_contextual:
                 continue
