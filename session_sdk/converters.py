@@ -911,6 +911,7 @@ class ClaudeRecordBuilder:
                 "message": msg_obj,
                 "uuid": entry_uuid,
                 "parentUuid": None if message.is_compaction else parent_uuid,
+                "isCompactSummary": True if message.is_compaction else None,
                 "isSidechain": False,
                 "userType": "external",
                 "entrypoint": "cli",
