@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -28,6 +29,39 @@ def _json_loads(data: str | bytes) -> object:
 
 class SessionStore:
     provider_name: str
+
+    def _cached(self, reader, path: Path):
+        """Result of a per-file listing reader (`_safe_summary`, `_safe_metadata`, ...), cached
+        until the file's mtime or size changes (for SQLite stores, also its -wal file). Listing
+        used to re-read every session on every call: ~3 s per search across all providers."""
+        memo = self.__dict__.get("_summary_memo")
+        if memo is None:
+            memo = self.__dict__.setdefault("_summary_memo", {})
+        try:
+            st = os.stat(path)
+        except OSError:
+            return reader(path)
+        stamp: tuple[int, ...] = (st.st_mtime_ns, st.st_size)
+        try:
+            wal = os.stat(f"{path}-wal")
+            stamp += (wal.st_mtime_ns, wal.st_size)
+        except OSError:
+            pass
+        key = (reader.__name__, str(path))
+        hit = memo.get(key)
+        if hit is not None and hit[0] == stamp:
+            return hit[1]
+        value = reader(path)
+        memo[key] = (stamp, value)
+        return value
+
+    def invalidate_paths(self) -> None:
+        """Forget the cached list of session files (and the id index), so the next listing sees
+        sessions created since. Cached per-file summaries stay valid."""
+        if hasattr(self, "_path_cache"):
+            self._path_cache = None
+        if hasattr(self, "_id_index"):
+            self._id_index = None
 
     def list(self, *, workers: int = 1) -> list[SessionSummary]:
         raise NotImplementedError
@@ -58,10 +92,10 @@ class CodexStore(SessionStore):
     def list(self, *, workers: int = 1) -> list[SessionSummary]:
         paths = self._session_paths()
         if workers <= 1 or len(paths) <= 1:
-            return [summary for path in paths if (summary := self._safe_summary(path)) is not None]
+            return [summary for path in paths if (summary := self._cached(self._safe_summary, path)) is not None]
         from concurrent.futures import ThreadPoolExecutor
         with ThreadPoolExecutor(max_workers=min(workers, len(paths)), thread_name_prefix="cx-list") as executor:
-            results = list(executor.map(self._safe_summary, paths))
+            results = list(executor.map(lambda p: self._cached(self._safe_summary, p), paths))
         return [s for s in results if s is not None]
 
     def load(self, session_id: str) -> NativeSession:
@@ -270,19 +304,19 @@ class PiStore(SessionStore):
     def list(self, *, workers: int = 1) -> list[SessionSummary]:
         paths = self._session_paths()
         if workers <= 1 or len(paths) <= 1:
-            return [s for path in paths if (s := self._safe_summary(path)) is not None]
+            return [s for path in paths if (s := self._cached(self._safe_summary, path)) is not None]
         from concurrent.futures import ThreadPoolExecutor
         with ThreadPoolExecutor(max_workers=min(workers, len(paths)), thread_name_prefix="pi-list") as executor:
-            results = list(executor.map(self._safe_summary, paths))
+            results = list(executor.map(lambda p: self._cached(self._safe_summary, p), paths))
         return [s for s in results if s is not None]
 
     def list_metadata(self, *, workers: int = 1) -> list[SessionSummary]:
         paths = self._session_paths()
         if workers <= 1 or len(paths) <= 1:
-            return [s for path in paths if (s := self._safe_metadata(path)) is not None]
+            return [s for path in paths if (s := self._cached(self._safe_metadata, path)) is not None]
         from concurrent.futures import ThreadPoolExecutor
         with ThreadPoolExecutor(max_workers=min(workers, len(paths)), thread_name_prefix="pi-meta") as executor:
-            results = list(executor.map(self._safe_metadata, paths))
+            results = list(executor.map(lambda p: self._cached(self._safe_metadata, p), paths))
         return [s for s in results if s is not None]
 
     def load(self, session_id: str) -> NativeSession:
@@ -411,10 +445,10 @@ class ClaudeStore(SessionStore):
     def list(self, *, workers: int = 1) -> list[SessionSummary]:
         paths = self._session_paths()
         if workers <= 1 or len(paths) <= 1:
-            return [s for path in paths if (s := self._safe_summary(path)) is not None]
+            return [s for path in paths if (s := self._cached(self._safe_summary, path)) is not None]
         from concurrent.futures import ThreadPoolExecutor
         with ThreadPoolExecutor(max_workers=min(workers, len(paths)), thread_name_prefix="cc-list") as executor:
-            results = list(executor.map(self._safe_summary, paths))
+            results = list(executor.map(lambda p: self._cached(self._safe_summary, p), paths))
         return [s for s in results if s is not None]
 
     def list_metadata(self, *, workers: int = 1) -> list[SessionSummary]:
@@ -547,7 +581,7 @@ class DevinStore(SessionStore):
             return result
         # No DB available -- fall back to scanning transcript files directly
         paths = self._session_paths()
-        return [s for path in paths if (s := self._safe_summary(path)) is not None]
+        return [s for path in paths if (s := self._cached(self._safe_summary, path)) is not None]
 
     def list_metadata(self, *, workers: int = 1) -> list[SessionSummary]:
         return self.list(workers=workers)
@@ -744,10 +778,10 @@ class FactoryStore(SessionStore):
     def list(self, *, workers: int = 1) -> list[SessionSummary]:
         paths = self._session_paths()
         if workers <= 1 or len(paths) <= 1:
-            return [s for path in paths if (s := self._safe_summary(path)) is not None]
+            return [s for path in paths if (s := self._cached(self._safe_summary, path)) is not None]
         from concurrent.futures import ThreadPoolExecutor
         with ThreadPoolExecutor(max_workers=min(workers, len(paths)), thread_name_prefix="factory-list") as executor:
-            results = list(executor.map(self._safe_summary, paths))
+            results = list(executor.map(lambda p: self._cached(self._safe_summary, p), paths))
         return [s for s in results if s is not None]
 
     def list_metadata(self, *, workers: int = 1) -> list[SessionSummary]:
@@ -868,10 +902,10 @@ class WindsurfStore(SessionStore):
     def list(self, *, workers: int = 1) -> list[SessionSummary]:
         paths = self._session_paths()
         if workers <= 1 or len(paths) <= 1:
-            return [s for path in paths if (s := self._safe_summary(path)) is not None]
+            return [s for path in paths if (s := self._cached(self._safe_summary, path)) is not None]
         from concurrent.futures import ThreadPoolExecutor
         with ThreadPoolExecutor(max_workers=min(workers, len(paths)), thread_name_prefix="ws-list") as executor:
-            results = list(executor.map(self._safe_summary, paths))
+            results = list(executor.map(lambda p: self._cached(self._safe_summary, p), paths))
         return [s for s in results if s is not None]
 
     def list_metadata(self, *, workers: int = 1) -> list[SessionSummary]:
@@ -1100,10 +1134,10 @@ class GrokStore(SessionStore):
     def list(self, *, workers: int = 1) -> list[SessionSummary]:
         paths = self._session_paths()
         if workers <= 1 or len(paths) <= 1:
-            return [s for path in paths if (s := self._safe_summary(path)) is not None]
+            return [s for path in paths if (s := self._cached(self._safe_summary, path)) is not None]
         from concurrent.futures import ThreadPoolExecutor
         with ThreadPoolExecutor(max_workers=min(workers, len(paths)), thread_name_prefix="grok-list") as executor:
-            results = list(executor.map(self._safe_summary, paths))
+            results = list(executor.map(lambda p: self._cached(self._safe_summary, p), paths))
         return [s for s in results if s is not None]
 
     def list_metadata(self, *, workers: int = 1) -> list[SessionSummary]:
@@ -1337,10 +1371,10 @@ class FreebuffStore(SessionStore):
     def list(self, *, workers: int = 1) -> list[SessionSummary]:
         paths = self._session_paths()
         if workers <= 1 or len(paths) <= 1:
-            return [s for path in paths for s in self._summaries_from_db(path)]
+            return [s for path in paths for s in self._cached(self._summaries_from_db, path)]
         from concurrent.futures import ThreadPoolExecutor
         with ThreadPoolExecutor(max_workers=min(workers, len(paths)), thread_name_prefix="fb-list") as executor:
-            results = list(executor.map(self._summaries_from_db, paths))
+            results = list(executor.map(lambda p: self._cached(self._summaries_from_db, p), paths))
         return [s for batch in results for s in batch]
 
     def list_metadata(self, *, workers: int = 1) -> list[SessionSummary]:
@@ -1780,10 +1814,10 @@ class OpenCodeStore(SessionStore):
     def list(self, *, workers: int = 1) -> list[SessionSummary]:
         paths = self._session_paths()
         if workers <= 1 or len(paths) <= 1:
-            return [s for path in paths if (s := self._safe_summary(path)) is not None]
+            return [s for path in paths if (s := self._cached(self._safe_summary, path)) is not None]
         from concurrent.futures import ThreadPoolExecutor
         with ThreadPoolExecutor(max_workers=min(workers, len(paths)), thread_name_prefix="oc-list") as executor:
-            results = list(executor.map(self._safe_summary, paths))
+            results = list(executor.map(lambda p: self._cached(self._safe_summary, p), paths))
         return [s for s in results if s is not None]
 
     def load(self, session_id: str) -> NativeSession:

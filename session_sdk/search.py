@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import os
 import re
 import sqlite3
+import time
 
 try:
     import re2 as _re2
@@ -130,6 +132,8 @@ class SessionSearchIndex:
             path.parent.mkdir(parents=True, exist_ok=True)
         self._db = sqlite3.connect(str(path) if path else ":memory:")
         self._db.row_factory = sqlite3.Row
+        #: Sessions that could not be parsed during refreshes ("path: error").
+        self.failures: list[str] = []
         self._setup()
 
     def close(self) -> None:
@@ -145,35 +149,53 @@ class SessionSearchIndex:
         max_refresh_sessions: int | None = None,
         max_refresh_bytes: int | None = None,
     ) -> int:
-        stale = [summary for summary in summaries if self._needs_index(summary)]
-        refresh_bytes = sum(summary.path.stat().st_size for summary in stale)
+        state = self._indexed_state()
+        stale = [summary for summary in summaries if self._needs_index(summary, state)]
+        refresh_bytes = sum((self._stat(summary.path) or os.stat_result((0,) * 10)).st_size for summary in stale)
         if max_refresh_sessions is not None and len(stale) > max_refresh_sessions:
             raise ValueError(f"refresh would parse {len(stale)} sessions; max_refresh_sessions={max_refresh_sessions}")
         if max_refresh_bytes is not None and refresh_bytes > max_refresh_bytes:
             raise ValueError(f"refresh would parse {refresh_bytes} bytes; max_refresh_bytes={max_refresh_bytes}")
         if not stale:
             return 0
+        indexed = 0
         with self._db:
             if workers <= 1 or len(stale) == 1:
                 for summary in stale:
-                    self._index_prepared(self._prepare_session(store, summary, extractor))
+                    try:
+                        prepared = self._prepare_session(store, summary, extractor)
+                    except Exception as error:  # one unreadable session must not stop the refresh
+                        self.failures.append(f"{summary.path}: {type(error).__name__}: {error}")
+                        continue
+                    self._index_prepared(prepared)
+                    indexed += 1
             else:
                 with ThreadPoolExecutor(max_workers=min(workers, len(stale)), thread_name_prefix="session-index") as executor:
-                    futures = [executor.submit(self._prepare_session, store, summary, extractor) for summary in stale]
+                    futures = {executor.submit(self._prepare_session, store, summary, extractor): summary for summary in stale}
                     for future in as_completed(futures):
-                        self._index_prepared(future.result())
+                        try:
+                            prepared = future.result()
+                        except Exception as error:
+                            self.failures.append(f"{futures[future].path}: {type(error).__name__}: {error}")
+                            continue
+                        self._index_prepared(prepared)
+                        indexed += 1
         self._db.execute("PRAGMA optimize")
-        return len(stale)
+        return indexed
 
-    def status(self, summaries: Sequence[SessionSummary]) -> dict[str, int]:
+    def status(self, summaries: Sequence[SessionSummary], *, count_deleted: bool = True) -> dict[str, int]:
         rows = {str(row["path"]): row for row in self._db.execute("SELECT path, mtime_ns, size, message_count FROM sessions")}
         indexed = 0
         stale = 0
         missing = 0
         indexed_messages = 0
         refresh_bytes = 0
+        vanished = 0
         for summary in summaries:
-            stat = summary.path.stat()
+            stat = self._stat(summary.path)
+            if stat is None:
+                vanished += 1
+                continue
             row = rows.get(self._path_key(summary.path))
             if row is None:
                 missing += 1
@@ -184,9 +206,10 @@ class SessionSearchIndex:
             if int(row["mtime_ns"]) != stat.st_mtime_ns or int(row["size"]) != stat.st_size:
                 stale += 1
                 refresh_bytes += stat.st_size
-        deleted = sum(1 for path in rows if not Path(path).exists())
+        # Checking every indexed path is a stat per session; searches only need the stale counts.
+        deleted = sum(1 for path in rows if not os.path.exists(path)) if count_deleted else 0
         return {
-            "sessions": len(summaries),
+            "sessions": len(summaries) - vanished,
             "indexed_sessions": indexed,
             "missing_sessions": missing,
             "stale_sessions": stale,
@@ -231,33 +254,33 @@ class SessionSearchIndex:
         clauses: list[str] = []
         params: list[object] = []
         if provider != "all":
-            clauses.append("provider = ?")
+            clauses.append("m.provider = ?")
             params.append(provider)
         if fts:
             clauses.append("messages_fts MATCH ?")
             params.append(fts)
         if roles:
-            clauses.append(f"role IN ({','.join('?' for _ in roles)})")
+            clauses.append(f"m.role IN ({','.join('?' for _ in roles)})")
             params.extend(sorted(roles))
         if message_types:
-            clauses.append(f"message_type IN ({','.join('?' for _ in message_types)})")
+            clauses.append(f"m.message_type IN ({','.join('?' for _ in message_types)})")
             params.extend(sorted(message_types))
         if not include_contextual:
-            clauses.append("message_type != 'contextual'")
+            clauses.append("m.message_type != 'contextual'")
         if not include_compactions:
-            clauses.append("message_type != 'compaction'")
+            clauses.append("m.message_type != 'compaction'")
         if after:
-            clauses.append("timestamp >= ?")
+            clauses.append("m.timestamp >= ?")
             params.append(after)
         if before:
-            clauses.append("timestamp <= ?")
+            clauses.append("m.timestamp <= ?")
             params.append(before)
         where = " AND ".join(clauses) if clauses else "1 = 1"
         sql = f"""
-            SELECT provider, session_id, path, cwd, timestamp, message_index, role, message_type, text
-            FROM messages_fts
+            SELECT m.provider, m.session_id, m.path, m.cwd, m.timestamp, m.message_index, m.role, m.message_type, m.text
+            {self._from_clause(bool(fts))}
             WHERE {where}
-            {"ORDER BY rank" if fts else "ORDER BY timestamp DESC, message_index ASC"}
+            {"ORDER BY messages_fts.rank" if fts else "ORDER BY m.timestamp DESC, m.message_index ASC"}
             {"LIMIT ?" if limit is not None else ""}
         """
         if limit is not None:
@@ -477,11 +500,35 @@ class SessionSearchIndex:
         results.sort(key=lambda r: r.match_count, reverse=True)
         return results
 
+    SCHEMA_VERSION = 2
+
     def _setup(self) -> None:
+        """Schema v2: message rows live in `messages` (indexed by path) and `messages_fts` is an
+        external-content FTS5 index over their text, kept in sync by triggers. Replacing one
+        session deletes its rows by an indexed path lookup plus FTS deletes by rowid. In v1 the
+        rows lived only in the FTS table, so `DELETE ... WHERE path = ?` scanned every message
+        (1.5 s per session on a 1.4M-message index), which kept refreshes from ever finishing."""
         self._db.executescript(
             """
             PRAGMA journal_mode=WAL;
             PRAGMA synchronous=NORMAL;
+            PRAGMA temp_store=MEMORY;
+            """
+        )
+        version = int(self._db.execute("PRAGMA user_version").fetchone()[0])
+        has_v1 = self._db.execute(
+            "SELECT 1 FROM sqlite_master WHERE name = 'messages_fts' AND sql LIKE '%provider UNINDEXED%'"
+        ).fetchone()
+        if version < self.SCHEMA_VERSION and has_v1:
+            # The v1 layout cannot be migrated in place; its rows are rebuilt on the next refresh.
+            self._db.executescript(
+                """
+                DROP TABLE IF EXISTS messages_fts;
+                DROP TABLE IF EXISTS sessions;
+                """
+            )
+        self._db.executescript(
+            """
             CREATE TABLE IF NOT EXISTS sessions (
                 path TEXT PRIMARY KEY,
                 provider TEXT NOT NULL,
@@ -492,28 +539,73 @@ class SessionSearchIndex:
                 size INTEGER NOT NULL,
                 message_count INTEGER NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS messages (
+                id INTEGER PRIMARY KEY,
+                path TEXT NOT NULL,
+                provider TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                cwd TEXT NOT NULL,
+                timestamp TEXT NOT NULL,
+                message_index INTEGER NOT NULL,
+                role TEXT NOT NULL,
+                message_type TEXT NOT NULL,
+                text TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS messages_path ON messages(path);
+            CREATE INDEX IF NOT EXISTS messages_provider_time ON messages(provider, timestamp);
             CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
-                provider UNINDEXED,
-                session_id UNINDEXED,
-                path UNINDEXED,
-                cwd UNINDEXED,
-                timestamp UNINDEXED,
-                message_index UNINDEXED,
-                role UNINDEXED,
-                message_type UNINDEXED,
                 text,
+                content='messages',
+                content_rowid='id',
                 tokenize='unicode61'
             );
+            CREATE TRIGGER IF NOT EXISTS messages_ai AFTER INSERT ON messages BEGIN
+                INSERT INTO messages_fts(rowid, text) VALUES (new.id, new.text);
+            END;
+            CREATE TRIGGER IF NOT EXISTS messages_ad AFTER DELETE ON messages BEGIN
+                INSERT INTO messages_fts(messages_fts, rowid, text) VALUES ('delete', old.id, old.text);
+            END;
             """
         )
+        self._db.execute(f"PRAGMA user_version = {self.SCHEMA_VERSION}")
+        self._db.commit()
 
-    def _needs_index(self, summary: SessionSummary) -> bool:
-        stat = summary.path.stat()
-        row = self._db.execute(
-            "SELECT mtime_ns, size FROM sessions WHERE path = ?",
-            (self._path_key(summary.path),),
-        ).fetchone()
-        return row is None or int(row["mtime_ns"]) != stat.st_mtime_ns or int(row["size"]) != stat.st_size
+    def _indexed_state(self) -> dict[str, tuple[int, int]]:
+        """(mtime_ns, size) of every indexed session, by path key, from one query."""
+        return {str(row["path"]): (int(row["mtime_ns"]), int(row["size"])) for row in self._db.execute("SELECT path, mtime_ns, size FROM sessions")}
+
+    @staticmethod
+    def _stat(path: Path) -> os.stat_result | None:
+        """stat() that returns None for files that vanished after listing (a store's manifest can
+        name transcripts that were deleted)."""
+        try:
+            return path.stat()
+        except OSError:
+            return None
+
+    def prune_deleted(self, provider: str | None = None) -> int:
+        """Drop index rows of sessions whose files no longer exist."""
+        sql = "SELECT path FROM sessions" + (" WHERE provider = ?" if provider else "")
+        gone = [str(row["path"]) for row in self._db.execute(sql, (provider,) if provider else ()) if not os.path.exists(str(row["path"]))]
+        with self._db:
+            for path in gone:
+                self._db.execute("DELETE FROM messages WHERE path = ?", (path,))
+                self._db.execute("DELETE FROM sessions WHERE path = ?", (path,))
+        return len(gone)
+
+    def _needs_index(self, summary: SessionSummary, state: dict[str, tuple[int, int]] | None = None) -> bool:
+        stat = self._stat(summary.path)
+        if stat is None:
+            return False
+        if state is None:
+            row = self._db.execute(
+                "SELECT mtime_ns, size FROM sessions WHERE path = ?",
+                (self._path_key(summary.path),),
+            ).fetchone()
+            known = (int(row["mtime_ns"]), int(row["size"])) if row else None
+        else:
+            known = state.get(self._path_key(summary.path))
+        return known is None or known != (stat.st_mtime_ns, stat.st_size)
 
     def _prepare_session(self, store: SessionStore, summary: SessionSummary, extractor: MessageExtractor) -> _PreparedSession:
         session = store.load_path(summary.path)
@@ -531,7 +623,7 @@ class SessionSearchIndex:
 
     def _index_prepared(self, prepared: _PreparedSession) -> None:
         path = self._path_key(prepared.path)
-        self._db.execute("DELETE FROM messages_fts WHERE path = ?", (path,))
+        self._db.execute("DELETE FROM messages WHERE path = ?", (path,))
         self._db.execute("DELETE FROM sessions WHERE path = ?", (path,))
         rows = [
                 (
@@ -549,7 +641,7 @@ class SessionSearchIndex:
             ]
         self._db.executemany(
             """
-            INSERT INTO messages_fts(provider, session_id, path, cwd, timestamp, message_index, role, message_type, text)
+            INSERT INTO messages(provider, session_id, path, cwd, timestamp, message_index, role, message_type, text)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             rows,
@@ -603,42 +695,47 @@ class SessionSearchIndex:
         before: str | None,
         limit: int | None,
     ) -> list[sqlite3.Row]:
-        clauses = [f"path IN ({','.join('?' for _ in path_keys)})"]
+        clauses = [f"m.path IN ({','.join('?' for _ in path_keys)})"]
         params: list[object] = list(path_keys)
         if fts:
             clauses.append("messages_fts MATCH ?")
             params.append(fts)
         if roles:
-            clauses.append(f"role IN ({','.join('?' for _ in roles)})")
+            clauses.append(f"m.role IN ({','.join('?' for _ in roles)})")
             params.extend(sorted(roles))
         if message_types:
-            clauses.append(f"message_type IN ({','.join('?' for _ in message_types)})")
+            clauses.append(f"m.message_type IN ({','.join('?' for _ in message_types)})")
             params.extend(sorted(message_types))
         if not include_contextual:
-            clauses.append("message_type != 'contextual'")
+            clauses.append("m.message_type != 'contextual'")
         if not include_compactions:
-            clauses.append("message_type != 'compaction'")
+            clauses.append("m.message_type != 'compaction'")
         if after:
-            clauses.append("timestamp >= ?")
+            clauses.append("m.timestamp >= ?")
             params.append(after)
         if before:
-            clauses.append("timestamp <= ?")
+            clauses.append("m.timestamp <= ?")
             params.append(before)
         sql = """
-            SELECT provider, session_id, path, cwd, timestamp, message_index, role, message_type, text
-            FROM {table}
+            SELECT m.provider, m.session_id, m.path, m.cwd, m.timestamp, m.message_index, m.role, m.message_type, m.text
+            {source}
             WHERE {where}
             {order_by}
             {limit}
         """.format(
-            table="messages_fts",
+            source=self._from_clause(bool(fts)),
             where=" AND ".join(clauses),
-            order_by="ORDER BY rank" if fts else "ORDER BY timestamp DESC, message_index ASC",
+            order_by="ORDER BY messages_fts.rank" if fts else "ORDER BY m.timestamp DESC, m.message_index ASC",
             limit="LIMIT ?" if limit is not None else "",
         )
         if limit is not None:
             params.append(limit)
         return list(self._db.execute(sql, params))
+
+    @staticmethod
+    def _from_clause(fts: bool) -> str:
+        """Full-text queries go through the FTS index and join back to the message rows."""
+        return "FROM messages_fts JOIN messages m ON m.id = messages_fts.rowid" if fts else "FROM messages m"
 
     @staticmethod
     def _messages(session: NativeSession, extractor: MessageExtractor) -> list[TextMessage]:
@@ -751,7 +848,9 @@ class SessionSearchIndex:
 
     @staticmethod
     def _path_key(path: Path) -> str:
-        return str(path.resolve()).lower()
+        # normcase(abspath) needs no filesystem call; Path.resolve() cost 0.25 ms per session
+        # (two GetFinalPathName calls on Windows) and ran for every session on every search.
+        return os.path.normcase(os.path.abspath(str(path))).lower()
 
     @staticmethod
     def _message_type(message: TextMessage) -> str:
@@ -894,6 +993,7 @@ class SessionSearchEngine:
     ) -> dict[str, int]:
         indexed: dict[str, int] = {}
         for name, store in self._selected_stores(provider):
+            self._index.prune_deleted(name)
             summaries = self._scoped_summaries(store, cwd=cwd, cwd_match=cwd_match, workers=workers)
             indexed[name] = self._index.ensure(
                 store,
@@ -985,7 +1085,7 @@ class SessionSearchEngine:
                 for summary in self._scoped_summaries(store, cwd=cwd, cwd_match=cwd_match, workers=workers)
                 if not wanted_ids or summary.session_id in wanted_ids
             ]
-            status = self._index.status(summaries)
+            status = self._index.status(summaries, count_deleted=False)
             if stale_policy == "error" and status["refresh_sessions"]:
                 raise ValueError(f"search index is stale: {status['refresh_sessions']} sessions need refresh")
             if stale_policy == "refresh":
@@ -1100,7 +1200,7 @@ class SessionSearchEngine:
                 for summary in self._scoped_summaries(store, cwd=cwd, cwd_match=cwd_match, workers=workers)
                 if not wanted_ids or summary.session_id in wanted_ids
             ]
-            status = self._index.status(summaries)
+            status = self._index.status(summaries, count_deleted=False)
             if stale_policy == "error" and status["refresh_sessions"]:
                 raise ValueError(f"search index is stale: {status['refresh_sessions']} sessions need refresh")
             if stale_policy == "refresh":
@@ -1135,7 +1235,15 @@ class SessionSearchEngine:
     def close(self) -> None:
         self._index.close()
 
+    #: Seconds a store's file list is reused before it is scanned again for new sessions.
+    PATH_TTL = 5.0
+
     def _scoped_summaries(self, store: SessionStore, *, cwd: str | None, cwd_match: CwdMatch, workers: int) -> list[SessionSummary]:
+        listed = self.__dict__.setdefault("_listed_at", {})
+        now = time.monotonic()
+        if now - listed.get(id(store), float("-inf")) >= self.PATH_TTL:
+            store.invalidate_paths()  # long-lived engines (the MCP server) must see new sessions
+            listed[id(store)] = now
         return [
             summary
             for summary in store.list_metadata(workers=max(1, workers))
