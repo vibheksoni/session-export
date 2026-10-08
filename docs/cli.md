@@ -14,7 +14,7 @@ python -m unisessions list <provider> [--workers N]
 
 | Argument | Description |
 |---|---|
-| `provider` | Required. One of `codex`, `pi`, `opencode`, `claude`, `devin`, `factory`, `windsurf`, `grok`, `freebuff`. |
+| `provider` | Required. One of `codex`, `pi`, `opencode`, `claude`, `devin`, `factory`, `windsurf`, `grok`, `freebuff`, `t3`. |
 | `--workers N` | Parallel listing workers (default: 1). |
 
 Output is tab-separated: provider, session ID, timestamp, message count, cwd, file path.
@@ -101,6 +101,24 @@ python -m unisessions <source>-to-<target> <session-id> [flags]
 | `windsurf-to-freebuff` | Windsurf | Freebuff Desktop |
 | `freebuff-to-grok` | Freebuff Desktop | Grok Build |
 | `grok-to-freebuff` | Grok Build | Freebuff Desktop |
+| `t3-to-pi` | T3 Code | Pi |
+| `t3-to-codex` | T3 Code | Codex |
+| `t3-to-opencode` | T3 Code | OpenCode |
+| `t3-to-claude` | T3 Code | Claude Code |
+| `t3-to-devin` | T3 Code | Devin |
+| `t3-to-factory` | T3 Code | Factory |
+| `t3-to-windsurf` | T3 Code | Windsurf |
+| `t3-to-grok` | T3 Code | Grok Build |
+| `t3-to-freebuff` | T3 Code | Freebuff Desktop |
+| `pi-to-t3` | Pi | T3 Code (experimental) |
+| `codex-to-t3` | Codex | T3 Code (experimental) |
+| `opencode-to-t3` | OpenCode | T3 Code (experimental) |
+| `claude-to-t3` | Claude Code | T3 Code (experimental) |
+| `devin-to-t3` | Devin | T3 Code (experimental) |
+| `factory-to-t3` | Factory | T3 Code (experimental) |
+| `windsurf-to-t3` | Windsurf | T3 Code (experimental) |
+| `grok-to-t3` | Grok Build | T3 Code (experimental) |
+| `freebuff-to-t3` | Freebuff Desktop | T3 Code (experimental) |
 
 #### Flags
 
@@ -147,7 +165,7 @@ python -m unisessions to-trace <provider> <session-id> --format <format> [--writ
 
 | Argument | Description |
 |---|---|
-| `provider` | Source provider: `codex`, `pi`, `opencode`, `claude`, `devin`, `factory`, `windsurf`, `grok`, `freebuff`. |
+| `provider` | Source provider: `codex`, `pi`, `opencode`, `claude`, `devin`, `factory`, `windsurf`, `grok`, `freebuff`, `t3`. |
 | `session_id` | Session ID to export. |
 | `--format` | Trace format: `sts` (default), `openai`, `sharegpt`. |
 | `--output`, `-o` | Output file path (required with `--write`). |
@@ -194,6 +212,8 @@ All commands accept these flags to override system default paths:
 | `--grok-home` | `$GROK_HOME` or `<home>/.grok` | Grok Build home root. |
 | `--grok-session-dir` | `<grok-home>/sessions` | Root containing Grok session directories (each with `updates.jsonl` + `summary.json`). |
 | `--freebuff-home` | `$FREEBUFF_CONFIG_DIR` or `<home>/.config/freebuff-desktop` | Freebuff Desktop home root. |
+| `--t3-home` | `$T3CODE_HOME` or `~/.t3` | T3 Code home. Reads come from `<home>/userdata` (read-only). `*-to-t3` writes need this flag and a new, empty home. |
+| `--t3-provider` | `codex` | `*-to-t3` only (experimental). T3 provider the imported thread runs on: `codex`, `claudeAgent`, `opencode`, `pi`, or `grok`. |
 | `--freebuff-session-dir` | `<freebuff-home>/projects` | Root containing Freebuff project directories (each with `desktop-v2.db`). |
 
 When a session directory override is provided, the store scans that directory directly instead of the tool's default location. This is useful for testing, custom installations, or working with exported session archives.

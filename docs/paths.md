@@ -28,6 +28,7 @@ defaults = WindowsDefaults(home=Path("/custom/home"))
 | `windsurf_home` | `<home>/.codeium/windsurf` | `WINDSURF_CONFIG_DIR` |
 | `grok_home` | `<home>/.grok` | `GROK_HOME` |
 | `freebuff_home` | `<home>/.config/freebuff-desktop` | `FREEBUFF_CONFIG_DIR` |
+| `t3_home` | `<home>/.t3` | `T3CODE_HOME` |
 | `opencode_session_dir` | `<opencode_data_home>/session-export` | -- |
 
 ### Platform Behavior

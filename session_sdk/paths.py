@@ -5,14 +5,18 @@ import string
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
+from hashlib import sha256
 from typing import Literal
-from uuid import UUID
-from uuid import uuid4
+from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 
 class SessionIdFactory:
     def __init__(self, *, preserve_ids: bool = True) -> None:
         self._preserve_ids = preserve_ids
+
+    @property
+    def preserve_ids(self) -> bool:
+        return self._preserve_ids
 
     def create(self, source_id: str) -> str:
         if self._preserve_ids:
@@ -116,6 +120,13 @@ class WindowsDefaults:
         return self._home / ".config" / "freebuff-desktop"
 
     @property
+    def t3_home(self) -> Path:
+        env = os.environ.get("T3CODE_HOME")
+        if env:
+            return Path(env)
+        return self._home / ".t3"
+
+    @property
     def opencode_session_dir(self) -> Path:
         return self.opencode_data_home / "session-export"
 
@@ -162,6 +173,28 @@ _BASE62_CHARS = string.digits + string.ascii_lowercase + string.ascii_uppercase
 def _random_base62(length: int) -> str:
     import secrets
     return "".join(secrets.choice(_BASE62_CHARS) for _ in range(length))
+
+
+def stable_session_uuid(source_id: str) -> str:
+    """UUID for a source session id. A UUID passes through unchanged. Any other id maps to a
+    UUIDv5, so exporting the same session twice writes the same file. T3 thread ids contain
+    colons, which Windows does not allow in file names."""
+    if is_uuid(source_id):
+        return source_id
+    return str(uuid5(NAMESPACE_URL, f"unisessions:{source_id}"))
+
+
+def stable_opencode_id(seed: str, timestamp: str) -> str:
+    """Deterministic OpenCode session id. Same time prefix as opencode_id, with a suffix hashed
+    from seed instead of drawn at random."""
+    epoch_ms = iso_to_epoch_ms(timestamp)
+    encoded = ~((epoch_ms * 0x1000 + 1) & ((1 << 48) - 1)) & ((1 << 48) - 1)
+    digest = int(sha256(seed.encode("utf-8")).hexdigest(), 16)
+    suffix = []
+    for _ in range(14):
+        digest, remainder = divmod(digest, 62)
+        suffix.append(_BASE62_CHARS[remainder])
+    return f"ses_{encoded:012x}{''.join(suffix)}"
 
 
 def opencode_id(prefix: Literal["ses", "msg", "prt"], timestamp: str) -> str:

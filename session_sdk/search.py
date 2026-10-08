@@ -19,9 +19,9 @@ from typing import Callable, Literal, Sequence
 
 from session_sdk.converters import MessageExtractor
 from session_sdk.models import NativeSession, SessionSummary, TextMessage
-from session_sdk.stores import ClaudeStore, CodexStore, DevinStore, FactoryStore, OpenCodeStore, PiStore, SessionStore, WindsurfStore
+from session_sdk.stores import ClaudeStore, CodexStore, DevinStore, FactoryStore, OpenCodeStore, PiStore, SessionStore, T3Store, WindsurfStore
 
-Provider = Literal["all", "codex", "pi", "opencode", "claude", "devin", "factory", "windsurf", "grok", "freebuff"]
+Provider = Literal["all", "codex", "pi", "opencode", "claude", "devin", "factory", "windsurf", "grok", "freebuff", "t3"]
 CwdMatch = Literal["exact", "contains", "prefix"]
 MatchMode = Literal["literal", "regex", "all_keywords", "any_keywords"]
 StalePolicy = Literal["refresh", "skip", "error"]
@@ -207,7 +207,7 @@ class SessionSearchIndex:
                 stale += 1
                 refresh_bytes += stat.st_size
         # Checking every indexed path is a stat per session; searches only need the stale counts.
-        deleted = sum(1 for path in rows if not os.path.exists(path)) if count_deleted else 0
+        deleted = sum(1 for path in rows if self._stat(Path(path)) is None) if count_deleted else 0
         return {
             "sessions": len(summaries) - vanished,
             "indexed_sessions": indexed,
@@ -577,16 +577,25 @@ class SessionSearchIndex:
     @staticmethod
     def _stat(path: Path) -> os.stat_result | None:
         """stat() that returns None for files that vanished after listing (a store's manifest can
-        name transcripts that were deleted)."""
+        name transcripts that were deleted).
+
+        A T3 thread has a virtual path ``<database>/<thread id>``. Its stat is the database
+        file's stat, so a thread is re-indexed whenever its database changes. That is coarser
+        than per-thread tracking, but it never misses an update.
+        """
         try:
             return path.stat()
+        except OSError:
+            pass
+        try:
+            return path.parent.stat() if path.parent.is_file() else None
         except OSError:
             return None
 
     def prune_deleted(self, provider: str | None = None) -> int:
         """Drop index rows of sessions whose files no longer exist."""
         sql = "SELECT path FROM sessions" + (" WHERE provider = ?" if provider else "")
-        gone = [str(row["path"]) for row in self._db.execute(sql, (provider,) if provider else ()) if not os.path.exists(str(row["path"]))]
+        gone = [str(row["path"]) for row in self._db.execute(sql, (provider,) if provider else ()) if self._stat(Path(str(row["path"]))) is None]
         with self._db:
             for path in gone:
                 self._db.execute("DELETE FROM messages WHERE path = ?", (path,))
@@ -609,7 +618,9 @@ class SessionSearchIndex:
 
     def _prepare_session(self, store: SessionStore, summary: SessionSummary, extractor: MessageExtractor) -> _PreparedSession:
         session = store.load_path(summary.path)
-        stat = session.path.stat()
+        stat = self._stat(session.path)
+        if stat is None:
+            raise FileNotFoundError(session.path)
         return _PreparedSession(
             provider=session.provider,
             session_id=session.session_id,
@@ -739,25 +750,7 @@ class SessionSearchIndex:
 
     @staticmethod
     def _messages(session: NativeSession, extractor: MessageExtractor) -> list[TextMessage]:
-        if session.provider == "codex":
-            return extractor.from_codex(session)
-        if session.provider == "pi":
-            return extractor.from_pi(session)
-        if session.provider == "opencode":
-            return extractor.from_opencode(session)
-        if session.provider == "claude":
-            return extractor.from_claude(session)
-        if session.provider == "devin":
-            return extractor.from_devin(session)
-        if session.provider == "factory":
-            return extractor.from_factory(session)
-        if session.provider == "windsurf":
-            return extractor.from_windsurf(session)
-        if session.provider == "grok":
-            return extractor.from_grok(session)
-        if session.provider == "freebuff":
-            return extractor.from_freebuff(session)
-        return []
+        return extractor.from_session(session)
 
     @staticmethod
     def build_fts_query(*, query: str | None, keywords: list[str] | None, regex: str | None, mode: MatchMode) -> str | None:
@@ -927,7 +920,7 @@ class SessionSearchIndex:
 
 
 class SessionSearchEngine:
-    def __init__(self, codex: CodexStore, pi: PiStore, opencode: OpenCodeStore, index_path: Path | None = None, claude: ClaudeStore | None = None, devin: DevinStore | None = None, factory: FactoryStore | None = None, windsurf: WindsurfStore | None = None, grok: GrokStore | None = None, freebuff: FreebuffStore | None = None) -> None:
+    def __init__(self, codex: CodexStore, pi: PiStore, opencode: OpenCodeStore, index_path: Path | None = None, claude: ClaudeStore | None = None, devin: DevinStore | None = None, factory: FactoryStore | None = None, windsurf: WindsurfStore | None = None, grok: GrokStore | None = None, freebuff: FreebuffStore | None = None, t3: T3Store | None = None) -> None:
         self._stores: dict[str, SessionStore] = {
             "codex": codex,
             "pi": pi,
@@ -945,6 +938,8 @@ class SessionSearchEngine:
             self._stores["grok"] = grok
         if freebuff is not None:
             self._stores["freebuff"] = freebuff
+        if t3 is not None:
+            self._stores["t3"] = t3
         self._extractor = MessageExtractor()
         self._index = SessionSearchIndex(index_path)
 

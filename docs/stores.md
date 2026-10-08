@@ -337,3 +337,92 @@ Do not invalidate these caches without reason. If you add or remove session file
 - [Paths](paths.md) -- `WindowsDefaults` for default path resolution.
 - [Converters](converters.md) -- how stores are used in conversion workflows.
 - [Trace Export](traces.md) -- how stores feed trace builders.
+
+## T3Store
+
+T3 Code (t3.codes) keeps its data under `<T3 home>/userdata`. `T3Store` reads it read-only.
+
+```python
+from session_sdk import T3Store, WindowsDefaults
+
+store = T3Store(WindowsDefaults().t3_home)
+for summary in store.list():
+    print(summary.session_id, summary.cwd, summary.message_count)
+session = store.load("<thread-id>")
+```
+
+### Databases
+
+- `statev2.sqlite` (current). Threads come from `orchestration_v2_projection_threads` and messages from `orchestration_v2_projection_messages`. The full object of each row is in `payload_json`.
+- `state.sqlite` (legacy V1). Threads come from `projection_threads` and messages from `projection_thread_messages`.
+
+A thread comes from `statev2.sqlite` when that database has it, otherwise from `state.sqlite`. Threads that exist only in the legacy file are still listed. Deleted threads (`deleted_at` set) are hidden.
+
+### Read-only
+
+Both databases are opened with a `mode=ro` URI, so the store never writes to them. T3 keeps the live database open while the app runs, so the store only reads it.
+
+### Limits
+
+- Only text is read: user and assistant messages. Tool calls, approvals, checkpoints, and attachments are not converted.
+- Writing into T3 is experimental. See [Writing into T3](#writing-into-t3-experimental).
+- Each thread's virtual path is `<database>/<thread id>`. The search index treats the database file's stat as the thread's stat, so any change to the database re-indexes every T3 thread.
+- Non-UUID thread ids become a stable UUIDv5 in the target format (T3 ids contain colons, which Windows does not allow in file names). Exporting the same thread twice writes the same file.
+
+### Writing into T3 (experimental)
+
+`<provider>-to-t3` writes a session as a T3 thread. It may not match every T3 release, so
+check the result in T3 before you rely on it.
+
+```sh
+python -m unisessions --t3-home /path/to/new-t3-home pi-to-t3 <session-id> --write --t3-provider codex
+```
+
+How it works:
+
+- T3 creates `statev2.sqlite` on its first launch. When it does, it copies the legacy
+  `userdata/state.sqlite` and imports every thread in it. So unisessions writes the legacy V1
+  schema, and T3 does the rest. Writing V2 events directly is not done.
+- The schema comes from `session_sdk/data/t3_state_v1.sql`. It was generated from the T3
+  checkout at commit `9a3070b` by running T3's own migrations 1 to 54 on an empty database.
+  `tools/t3/schema_dump.ts` is the generator. Migrations 55 and later are not in the file, because
+  T3 creates them itself.
+- The thread keeps the session's title (first user message), working directory (the project's
+  workspace root), and user and assistant text in order. Tool calls, approvals, checkpoints, and
+  attachments are not written. Contextual messages are dropped, and compaction summaries become
+  assistant messages.
+- The thread runs on the `--t3-provider` driver with that driver's default model, because model
+  names do not carry across providers. It starts with `approval-required` runtime mode, so the
+  imported history cannot act on its own.
+- Thread and message ids are stable, so exporting the same session twice writes the same
+  thread. `--on-conflict update` skips threads whose message count has not changed.
+
+Guards. A write is refused when:
+
+- `--t3-home` is missing (the write command exits with status 2).
+- The home already has `statev2.sqlite`. T3 imports legacy threads only when it creates that file,
+  and appending to an existing home was checked to import nothing. Use a new, empty home. Several
+  sessions can go into the same new home before the first launch.
+- The target is the live T3 data directory (`$T3CODE_HOME/userdata` or `~/.t3/userdata`).
+- The target database exists but was not created by unisessions. Unisessions sets the SQLite
+  `application_id` to `0x554E4953` ("UNIS"), which T3 ignores.
+
+A write goes to a staging file that is moved into place only when it succeeds. A failed write
+leaves no `state.sqlite`.
+
+Verify a write:
+
+1. `python -m unisessions --t3-home <new home> pi-to-t3 <id> --write`
+2. Start T3 against the new home: `T3CODE_HOME=<new home> node apps/server/src/bin.ts --no-browser`.
+   The server log should show `Imported legacy v1 thread shells`.
+3. Check `<new home>/userdata/statev2.sqlite` or open the thread in T3.
+
+Regenerate the schema template after a T3 migration change. Copy `tools/t3/schema_dump.ts` into
+`apps/server/scripts/` of a T3 checkout, then run:
+
+```sh
+node scripts/schema_dump.ts <empty-db-path> <output.sql>
+```
+
+Then replace `session_sdk/data/t3_state_v1.sql` with the output, keeping the header comment.
+

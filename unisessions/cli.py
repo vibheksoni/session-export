@@ -70,6 +70,16 @@ from session_sdk.converters import (
     PiToGrokConverter,
     PiToOpenCodeConverter,
     PiToWindsurfConverter,
+    T3ToClaudeConverter,
+    T3ToCodexConverter,
+    T3ToDevinConverter,
+    T3ToFactoryConverter,
+    T3ToFreebuffConverter,
+    T3ToGrokConverter,
+    T3ToOpenCodeConverter,
+    T3ToPiConverter,
+    T3ToWindsurfConverter,
+    ToT3Converter,
     WindsurfToClaudeConverter,
     WindsurfToCodexConverter,
     WindsurfToDevinConverter,
@@ -81,7 +91,7 @@ from session_sdk.converters import (
 )
 from session_sdk.models import ConversionPlan, SessionSummary
 from session_sdk.paths import SessionIdFactory, WindowsDefaults
-from session_sdk.stores import ClaudeStore, CodexStore, DevinStore, FactoryStore, FreebuffStore, GrokStore, OpenCodeStore, PiDcpStore, PiStore, WindsurfStore
+from session_sdk.stores import T3_PROVIDER_DRIVERS, T3WriteError, ClaudeStore, CodexStore, DevinStore, FactoryStore, FreebuffStore, GrokStore, OpenCodeStore, PiDcpStore, PiStore, T3Store, WindsurfStore
 from session_sdk.traces import TRACE_FORMATS, build_trace
 from session_sdk.converters import MessageExtractor
 
@@ -130,15 +140,16 @@ class CliApp:
             Path(args.freebuff_home or defaults.freebuff_home),
             self._optional_path(args.freebuff_session_dir),
         )
+        t3 = T3Store(Path(args.t3_home or defaults.t3_home))
 
         if args.command == "list":
-            store = {"codex": codex, "pi": pi, "opencode": opencode, "claude": claude, "devin": devin, "factory": factory, "windsurf": windsurf, "grok": grok, "freebuff": freebuff}[args.provider]
+            store = {"codex": codex, "pi": pi, "opencode": opencode, "claude": claude, "devin": devin, "factory": factory, "windsurf": windsurf, "grok": grok, "freebuff": freebuff, "t3": t3}[args.provider]
             summaries = store.list(workers=args.workers or 1)
             self._print_summaries(summaries)
             return 0
 
         if args.command == "to-trace":
-            return self._to_trace(args, codex, pi, opencode, claude, devin, factory, windsurf, grok, freebuff)
+            return self._to_trace(args, codex, pi, opencode, claude, devin, factory, windsurf, grok, freebuff, t3)
 
         id_factory = SessionIdFactory(preserve_ids=not args.new_id)
         if args.command in ("codex-to-pi", "pi-to-codex", "codex-to-opencode",
@@ -165,8 +176,10 @@ class CliApp:
                             "freebuff-to-windsurf", "freebuff-to-grok",
                             "pi-to-freebuff", "codex-to-freebuff", "opencode-to-freebuff",
                             "claude-to-freebuff", "devin-to-freebuff", "factory-to-freebuff",
-                            "windsurf-to-freebuff", "grok-to-freebuff"):
-            return self._single_convert(args, codex, pi, dcp, opencode, claude, devin, factory, windsurf, grok, freebuff, id_factory)
+                            "windsurf-to-freebuff", "grok-to-freebuff",
+                            "codex-to-t3", "pi-to-t3", "opencode-to-t3", "claude-to-t3", "devin-to-t3", "factory-to-t3", "windsurf-to-t3", "grok-to-t3", "freebuff-to-t3",
+                            "t3-to-pi", "t3-to-codex", "t3-to-opencode", "t3-to-claude", "t3-to-devin", "t3-to-factory", "t3-to-windsurf", "t3-to-grok", "t3-to-freebuff"):
+            return self._single_convert(args, codex, pi, dcp, opencode, claude, devin, factory, windsurf, grok, freebuff, t3, id_factory)
 
         if args.command == "codex-to-pi-all":
             return self._bulk_export(codex, pi, dcp, opencode, id_factory, args, targets=["pi"])
@@ -198,10 +211,11 @@ class CliApp:
         parser.add_argument("--grok-session-dir", default=None)
         parser.add_argument("--freebuff-home", default=None)
         parser.add_argument("--freebuff-session-dir", default=None)
+        parser.add_argument("--t3-home", default=None, help="T3 Code home (default: T3CODE_HOME or ~/.t3). Threads are read from <home>/userdata, read-only.")
         subparsers = parser.add_subparsers(dest="command", required=True)
 
         list_parser = subparsers.add_parser("list")
-        list_parser.add_argument("provider", choices=("codex", "pi", "opencode", "claude", "devin", "factory", "windsurf", "grok", "freebuff"))
+        list_parser.add_argument("provider", choices=("codex", "pi", "opencode", "claude", "devin", "factory", "windsurf", "grok", "freebuff", "t3"))
         list_parser.add_argument("--workers", type=int, default=None, help="Number of parallel workers for listing (default: 1).")
 
         codex_to_pi = subparsers.add_parser("codex-to-pi")
@@ -420,6 +434,69 @@ class CliApp:
         grok_to_freebuff = subparsers.add_parser("grok-to-freebuff")
         CliApp._add_convert_args(grok_to_freebuff)
 
+        t3_to_pi = subparsers.add_parser("t3-to-pi")
+        CliApp._add_convert_args(t3_to_pi)
+
+        t3_to_codex = subparsers.add_parser("t3-to-codex")
+        CliApp._add_convert_args(t3_to_codex)
+
+        t3_to_opencode = subparsers.add_parser("t3-to-opencode")
+        CliApp._add_convert_args(t3_to_opencode)
+
+        t3_to_claude = subparsers.add_parser("t3-to-claude")
+        CliApp._add_convert_args(t3_to_claude)
+
+        t3_to_devin = subparsers.add_parser("t3-to-devin")
+        CliApp._add_convert_args(t3_to_devin)
+
+        t3_to_factory = subparsers.add_parser("t3-to-factory")
+        CliApp._add_convert_args(t3_to_factory)
+
+        t3_to_windsurf = subparsers.add_parser("t3-to-windsurf")
+        CliApp._add_convert_args(t3_to_windsurf)
+
+        t3_to_grok = subparsers.add_parser("t3-to-grok")
+        CliApp._add_convert_args(t3_to_grok)
+
+        t3_to_freebuff = subparsers.add_parser("t3-to-freebuff")
+        CliApp._add_convert_args(t3_to_freebuff)
+
+        codex_to_t3 = subparsers.add_parser("codex-to-t3")
+        CliApp._add_convert_args(codex_to_t3)
+        CliApp._add_t3_target_args(codex_to_t3)
+
+        pi_to_t3 = subparsers.add_parser("pi-to-t3")
+        CliApp._add_convert_args(pi_to_t3)
+        CliApp._add_t3_target_args(pi_to_t3)
+
+        opencode_to_t3 = subparsers.add_parser("opencode-to-t3")
+        CliApp._add_convert_args(opencode_to_t3)
+        CliApp._add_t3_target_args(opencode_to_t3)
+
+        claude_to_t3 = subparsers.add_parser("claude-to-t3")
+        CliApp._add_convert_args(claude_to_t3)
+        CliApp._add_t3_target_args(claude_to_t3)
+
+        devin_to_t3 = subparsers.add_parser("devin-to-t3")
+        CliApp._add_convert_args(devin_to_t3)
+        CliApp._add_t3_target_args(devin_to_t3)
+
+        factory_to_t3 = subparsers.add_parser("factory-to-t3")
+        CliApp._add_convert_args(factory_to_t3)
+        CliApp._add_t3_target_args(factory_to_t3)
+
+        windsurf_to_t3 = subparsers.add_parser("windsurf-to-t3")
+        CliApp._add_convert_args(windsurf_to_t3)
+        CliApp._add_t3_target_args(windsurf_to_t3)
+
+        grok_to_t3 = subparsers.add_parser("grok-to-t3")
+        CliApp._add_convert_args(grok_to_t3)
+        CliApp._add_t3_target_args(grok_to_t3)
+
+        freebuff_to_t3 = subparsers.add_parser("freebuff-to-t3")
+        CliApp._add_convert_args(freebuff_to_t3)
+        CliApp._add_t3_target_args(freebuff_to_t3)
+
         codex_to_pi_all = subparsers.add_parser("codex-to-pi-all")
         CliApp._add_bulk_args(codex_to_pi_all)
 
@@ -428,7 +505,7 @@ class CliApp:
         export_all.add_argument("--targets", nargs="+", default=["pi"], choices=("pi", "opencode", "claude", "devin", "factory", "windsurf", "grok", "freebuff"))
 
         to_trace = subparsers.add_parser("to-trace")
-        to_trace.add_argument("provider", choices=("codex", "pi", "opencode", "claude", "devin", "factory", "windsurf", "grok", "freebuff"))
+        to_trace.add_argument("provider", choices=("codex", "pi", "opencode", "claude", "devin", "factory", "windsurf", "grok", "freebuff", "t3"))
         to_trace.add_argument("session_id")
         to_trace.add_argument("--format", choices=TRACE_FORMATS, default="sts",
                               help="Trace format: sts (HuggingFace), openai (fine-tuning), or sharegpt.")
@@ -550,6 +627,15 @@ class CliApp:
         return 0 if failed == 0 else 1
 
     @staticmethod
+    def _add_t3_target_args(parser: argparse.ArgumentParser) -> None:
+        parser.add_argument(
+            "--t3-provider",
+            choices=sorted(T3_PROVIDER_DRIVERS),
+            default="codex",
+            help="T3 provider the imported thread runs on (experimental, default: codex).",
+        )
+
+    @staticmethod
     def _add_convert_args(parser: argparse.ArgumentParser) -> None:
         parser.add_argument("session_id")
         parser.add_argument("--write", action="store_true", help="Write the converted session.")
@@ -571,6 +657,7 @@ class CliApp:
         windsurf: WindsurfStore,
         grok: GrokStore,
         freebuff: FreebuffStore,
+        t3: T3Store,
         id_factory: SessionIdFactory,
     ) -> int:
         converters = {
@@ -646,9 +733,34 @@ class CliApp:
             "windsurf-to-freebuff": lambda: WindsurfToFreebuffConverter(windsurf, freebuff, id_factory),
             "freebuff-to-grok": lambda: FreebuffToGrokConverter(freebuff, grok, id_factory),
             "grok-to-freebuff": lambda: GrokToFreebuffConverter(grok, freebuff, id_factory),
+            "t3-to-pi": lambda: T3ToPiConverter(t3, pi, dcp, id_factory),
+            "t3-to-codex": lambda: T3ToCodexConverter(t3, codex, id_factory),
+            "t3-to-opencode": lambda: T3ToOpenCodeConverter(t3, opencode, id_factory),
+            "t3-to-claude": lambda: T3ToClaudeConverter(t3, claude, id_factory),
+            "t3-to-devin": lambda: T3ToDevinConverter(t3, devin, id_factory),
+            "t3-to-factory": lambda: T3ToFactoryConverter(t3, factory, id_factory),
+            "t3-to-windsurf": lambda: T3ToWindsurfConverter(t3, windsurf, id_factory),
+            "t3-to-grok": lambda: T3ToGrokConverter(t3, grok, id_factory),
+            "t3-to-freebuff": lambda: T3ToFreebuffConverter(t3, freebuff, id_factory),
+            "codex-to-t3": lambda: ToT3Converter(codex, t3, id_factory, args.t3_provider),
+            "pi-to-t3": lambda: ToT3Converter(pi, t3, id_factory, args.t3_provider),
+            "opencode-to-t3": lambda: ToT3Converter(opencode, t3, id_factory, args.t3_provider),
+            "claude-to-t3": lambda: ToT3Converter(claude, t3, id_factory, args.t3_provider),
+            "devin-to-t3": lambda: ToT3Converter(devin, t3, id_factory, args.t3_provider),
+            "factory-to-t3": lambda: ToT3Converter(factory, t3, id_factory, args.t3_provider),
+            "windsurf-to-t3": lambda: ToT3Converter(windsurf, t3, id_factory, args.t3_provider),
+            "grok-to-t3": lambda: ToT3Converter(grok, t3, id_factory, args.t3_provider),
+            "freebuff-to-t3": lambda: ToT3Converter(freebuff, t3, id_factory, args.t3_provider),
         }
         converter = converters[args.command]()
         sid = args.session_id
+
+        if args.command.endswith("-to-t3"):
+            print("EXPERIMENTAL: T3 Code writes may not match every T3 release. Open the result in a new, empty T3 home.", file=sys.stderr)
+            if not args.t3_home:
+                print("Pass --t3-home <new empty folder> to choose where the thread goes. Without it, the destination shown is the default T3 home. The live T3 data directory is never written.", file=sys.stderr)
+                if args.write:
+                    return 2
 
         # For update mode, check changes before planning to avoid double parse.
         # has_changes only counts source records vs destination records -- fast.
@@ -664,7 +776,7 @@ class CliApp:
         if args.write and args.on_conflict == "fork":
             # Check if destination exists before forking
             plan = converter.plan(sid)
-            if plan.destination.exists():
+            if self._destination_taken(converter, plan):
                 target_id = str(uuid4())
                 plan = converter.plan(sid, target_id=target_id)
                 print(f"Forked to new session ID: {target_id}")
@@ -675,12 +787,16 @@ class CliApp:
         plan = converter.plan(sid, target_id=target_id)
         self._print_plan(plan)
         if args.write:
-            if plan.destination.exists():
+            if self._destination_taken(converter, plan):
                 action = self._resolve_conflict(args, converter, sid)
                 if action == "skip":
                     print(f"Destination exists, skipping: {plan.destination}")
                     return 0
-            converter.write(plan, overwrite=True)
+            try:
+                converter.write(plan, overwrite=True)
+            except T3WriteError as error:
+                print(f"error: {error}", file=sys.stderr)
+                return 2
         return 0
 
     def _to_trace(
@@ -695,8 +811,9 @@ class CliApp:
         windsurf: WindsurfStore,
         grok: GrokStore,
         freebuff: FreebuffStore,
+        t3: T3Store,
     ) -> int:
-        stores = {"codex": codex, "pi": pi, "opencode": opencode, "claude": claude, "devin": devin, "factory": factory, "windsurf": windsurf, "grok": grok, "freebuff": freebuff}
+        stores = {"codex": codex, "pi": pi, "opencode": opencode, "claude": claude, "devin": devin, "factory": factory, "windsurf": windsurf, "grok": grok, "freebuff": freebuff, "t3": t3}
         store = stores[args.provider]
         session = store.load(args.session_id)
         extractor = MessageExtractor()
@@ -710,6 +827,7 @@ class CliApp:
             "windsurf": extractor.from_windsurf,
             "grok": extractor.from_grok,
             "freebuff": extractor.from_freebuff,
+            "t3": extractor.from_t3,
         }
         messages = extractors[args.provider](session)
         records = build_trace(args.format, session, messages)
@@ -725,6 +843,15 @@ class CliApp:
         else:
             sys.stdout.write(output)
         return 0
+
+    @staticmethod
+    def _destination_taken(converter, plan: ConversionPlan) -> bool:
+        """Whether the session already exists at its destination. Most targets keep one file per
+        session. T3 keeps every thread in one database, so its converter answers per thread."""
+        taken = getattr(converter, "destination_taken", None)
+        if taken is not None:
+            return bool(taken(plan))
+        return plan.destination.exists()
 
     def _resolve_conflict(self, args: argparse.Namespace, converter, session_id: str) -> str:
         """Returns 'skip', 'overwrite', or 'fork'."""

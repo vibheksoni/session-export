@@ -1,14 +1,30 @@
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Protocol
+from typing import Callable, Protocol
+from uuid import NAMESPACE_URL, uuid5
 
 from session_sdk.json_types import JsonObject, as_list, as_object, as_str, sequence_to_text, string_value
 from session_sdk.jsonl import _loads
 from session_sdk.models import ConversionPlan, NativeSession, TextMessage
-from session_sdk.paths import SessionIdFactory, iso_to_epoch_ms, opencode_id, opencode_slug
-from session_sdk.stores import ClaudeStore, CodexStore, DevinStore, FactoryStore, FreebuffStore, GrokStore, OpenCodeStore, PiDcpStore, PiStore, WindsurfStore
+from session_sdk.paths import SessionIdFactory, epoch_ms_to_iso, iso_to_epoch_ms, opencode_id, opencode_slug, stable_opencode_id, stable_session_uuid
+from session_sdk.stores import (
+    T3_PROVIDER_DRIVERS,
+    ClaudeStore,
+    CodexStore,
+    DevinStore,
+    FactoryStore,
+    FreebuffStore,
+    GrokStore,
+    OpenCodeStore,
+    PiDcpStore,
+    PiStore,
+    SessionStore,
+    T3Store,
+    WindsurfStore,
+)
 
 
 def _count_jsonl_records(path: Path) -> int:
@@ -494,6 +510,45 @@ class MessageExtractor:
             else:
                 contextual = self._is_contextual(text)
                 messages.append(TextMessage("user", text, timestamp, is_contextual=contextual))
+        return messages
+
+    def from_session(self, session: NativeSession) -> list[TextMessage]:
+        """Extract text history from a session of any provider, dispatching on its provider."""
+        extractors: dict[str, Callable[[NativeSession], list[TextMessage]]] = {
+            "codex": self.from_codex,
+            "pi": self.from_pi,
+            "opencode": self.from_opencode,
+            "claude": self.from_claude,
+            "devin": self.from_devin,
+            "factory": self.from_factory,
+            "windsurf": self.from_windsurf,
+            "grok": self.from_grok,
+            "freebuff": self.from_freebuff,
+            "t3": self.from_t3,
+        }
+        extractor = extractors.get(session.provider)
+        return extractor(session) if extractor is not None else []
+
+    def from_t3(self, session: NativeSession) -> list[TextMessage]:
+        """Extract text history from a T3 Code thread.
+
+        T3 stores one row per message with role, text and an ISO timestamp. Only
+        user and assistant rows carry the conversation. The thread's model selection
+        rides on every record, so assistant messages keep their provider and model.
+        """
+        messages: list[TextMessage] = []
+        for record in session.records:
+            role = str(record.get("role") or "")
+            text = str(record.get("text") or "")
+            if role not in ("user", "assistant") or not text:
+                continue
+            timestamp = str(record.get("created_at") or session.timestamp)
+            if role == "assistant":
+                provider = str(record.get("instance_id") or "") or None
+                model = str(record.get("model") or "") or None
+                messages.append(TextMessage("assistant", text, timestamp, model=model, provider=provider))
+            else:
+                messages.append(TextMessage("user", text, timestamp, is_contextual=self._is_contextual(text)))
         return messages
 
     _WINDSURF_CONTEXTUAL_MARKERS: tuple[str, ...] = (
@@ -1918,6 +1973,8 @@ class ClaudeToDevinConverter:
 
 class FactoryRecordBuilder:
     def build(self, session_id: str, cwd: str, timestamp: str, messages: list[TextMessage]) -> list[JsonObject]:
+        from uuid import uuid4
+
         header: JsonObject = {
             "type": "session_start",
             "id": session_id,
@@ -3962,3 +4019,372 @@ class GrokToFreebuffConverter:
         if timestamp:
             return timestamp
         return datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+def _timestamp_or_now(timestamp: str) -> str:
+    if timestamp:
+        return timestamp
+    return datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+class _T3ConverterBase:
+    """Shared T3-to-X pipeline. T3 is read-only, so every converter here reads T3.
+
+    Subclasses choose the target store, the record builder, destination naming, and
+    how a destination is counted for ``has_changes``.
+    """
+
+    def __init__(self, t3_store: T3Store, id_factory: SessionIdFactory) -> None:
+        self._t3_store = t3_store
+        self._id_factory = id_factory
+        self._extractor = MessageExtractor()
+        self._builder: _RecordBuilder
+
+    def plan(self, session_id: str, *, target_id: str | None = None) -> ConversionPlan:
+        source = self._t3_store.load(session_id)
+        timestamp = _timestamp_or_now(source.timestamp)
+        resolved_id = target_id or self._resolve_id(source.session_id, timestamp)
+        records = self._records(resolved_id, source, timestamp)
+        destination = self._destination(resolved_id, timestamp, source.cwd)
+        return ConversionPlan(source, destination, records, self._services(resolved_id))
+
+    def has_changes(self, session_id: str) -> bool:
+        try:
+            source = self._t3_store.load(session_id)
+        except FileNotFoundError:
+            return True
+        timestamp = _timestamp_or_now(source.timestamp)
+        resolved_id = self._resolve_id(source.session_id, timestamp)
+        destination = self._destination(resolved_id, timestamp, source.cwd)
+        if not destination.exists():
+            return True
+        return self._expected(self._records(resolved_id, source, timestamp)) != self._count(destination)
+
+    def _records(self, resolved_id: str, source: NativeSession, timestamp: str) -> list[JsonObject]:
+        return self._builder.build(resolved_id, source.cwd, timestamp, self._extractor.from_t3(source))
+
+    def _expected(self, records: list[JsonObject]) -> int:
+        """Record count the destination should hold, in the same unit as ``_count``."""
+        return len(records)
+
+    def _services(self, resolved_id: str) -> tuple[Path, ...]:
+        return ()
+
+    def _resolve_id(self, source_id: str, timestamp: str) -> str:
+        raise NotImplementedError
+
+    def _destination(self, resolved_id: str, timestamp: str, cwd: str) -> Path:
+        raise NotImplementedError
+
+    def _count(self, destination: Path) -> int:
+        raise NotImplementedError
+
+
+class _RecordBuilder(Protocol):
+    def build(self, session_id: str, cwd: str, timestamp: str, messages: list[TextMessage]) -> list[JsonObject]: ...
+
+
+class T3ToPiConverter(_T3ConverterBase):
+    def __init__(self, t3_store: T3Store, pi_store: PiStore, dcp_store: PiDcpStore, id_factory: SessionIdFactory) -> None:
+        super().__init__(t3_store, id_factory)
+        self._pi_store = pi_store
+        self._dcp_store = dcp_store
+        self._builder = PiRecordBuilder()
+
+    def _resolve_id(self, source_id: str, timestamp: str) -> str:
+        return self._id_factory.create(stable_session_uuid(source_id))
+
+    def _destination(self, resolved_id: str, timestamp: str, cwd: str) -> Path:
+        return self._pi_store.destination_path(resolved_id, timestamp, cwd)
+
+    def _services(self, resolved_id: str) -> tuple[Path, ...]:
+        return (self._dcp_store.destination_path(resolved_id),)
+
+    def _count(self, destination: Path) -> int:
+        return _count_jsonl_records(destination)
+
+    def write(self, plan: ConversionPlan, *, overwrite: bool = False) -> None:
+        self._pi_store.write(plan.destination, plan.records, overwrite=overwrite)
+        for service_path in plan.services:
+            self._dcp_store.write_default(plan.destination.stem.rsplit("_", 1)[-1], service_path, overwrite=overwrite)
+
+
+class T3ToCodexConverter(_T3ConverterBase):
+    def __init__(self, t3_store: T3Store, codex_store: CodexStore, id_factory: SessionIdFactory) -> None:
+        super().__init__(t3_store, id_factory)
+        self._codex_store = codex_store
+        self._builder = CodexRecordBuilder()
+
+    def _records(self, resolved_id: str, source: NativeSession, timestamp: str) -> list[JsonObject]:
+        return self._builder.build(resolved_id, source.cwd, timestamp, self._extractor.from_t3(source), "t3-import")
+
+    def _resolve_id(self, source_id: str, timestamp: str) -> str:
+        return self._id_factory.create(stable_session_uuid(source_id))
+
+    def _destination(self, resolved_id: str, timestamp: str, cwd: str) -> Path:
+        return self._codex_store.destination_path(resolved_id, timestamp)
+
+    def _count(self, destination: Path) -> int:
+        return _count_jsonl_records(destination)
+
+    def write(self, plan: ConversionPlan, *, overwrite: bool = False) -> None:
+        self._codex_store.write(plan.destination, plan.records, overwrite=overwrite)
+
+
+class T3ToOpenCodeConverter(_T3ConverterBase):
+    def __init__(self, t3_store: T3Store, opencode_store: OpenCodeStore, id_factory: SessionIdFactory) -> None:
+        super().__init__(t3_store, id_factory)
+        self._opencode_store = opencode_store
+        self._builder = OpenCodeExportBuilder()
+
+    def _resolve_id(self, source_id: str, timestamp: str) -> str:
+        if self._id_factory.preserve_ids:
+            return stable_opencode_id(stable_session_uuid(source_id), timestamp)
+        return opencode_id("ses", timestamp)
+
+    def _destination(self, resolved_id: str, timestamp: str, cwd: str) -> Path:
+        return self._opencode_store.destination_path(resolved_id)
+
+    def _expected(self, records: list[JsonObject]) -> int:
+        messages = records[0].get("messages") if records else None
+        return len(messages) if isinstance(messages, list) else 0
+
+    def _count(self, destination: Path) -> int:
+        return _count_opencode_records(destination)
+
+    def write(self, plan: ConversionPlan, *, overwrite: bool = False) -> None:
+        self._opencode_store.write(plan.destination, plan.records, overwrite=overwrite)
+
+
+class T3ToClaudeConverter(_T3ConverterBase):
+    def __init__(self, t3_store: T3Store, claude_store: ClaudeStore, id_factory: SessionIdFactory) -> None:
+        super().__init__(t3_store, id_factory)
+        self._claude_store = claude_store
+        self._builder = ClaudeRecordBuilder()
+
+    def _resolve_id(self, source_id: str, timestamp: str) -> str:
+        return self._id_factory.create(stable_session_uuid(source_id))
+
+    def _destination(self, resolved_id: str, timestamp: str, cwd: str) -> Path:
+        return self._claude_store.destination_path(resolved_id, cwd)
+
+    def _count(self, destination: Path) -> int:
+        return _count_jsonl_records(destination)
+
+    def write(self, plan: ConversionPlan, *, overwrite: bool = False) -> None:
+        self._claude_store.write(plan.destination, plan.records, overwrite=overwrite)
+
+
+class T3ToDevinConverter(_T3ConverterBase):
+    def __init__(self, t3_store: T3Store, devin_store: DevinStore, id_factory: SessionIdFactory) -> None:
+        super().__init__(t3_store, id_factory)
+        self._devin_store = devin_store
+        self._builder = DevinRecordBuilder()
+
+    def _resolve_id(self, source_id: str, timestamp: str) -> str:
+        return self._id_factory.create(stable_session_uuid(source_id))
+
+    def _destination(self, resolved_id: str, timestamp: str, cwd: str) -> Path:
+        return self._devin_store.destination_path(resolved_id)
+
+    def _count(self, destination: Path) -> int:
+        # Devin files hold ATIF steps, which the OpenCode counter cannot read. -1 keeps
+        # has_changes conservative: an existing destination is rewritten.
+        return -1
+
+    def write(self, plan: ConversionPlan, *, overwrite: bool = False) -> None:
+        self._devin_store.write(plan.destination, plan.records, overwrite=overwrite)
+
+
+class T3ToFactoryConverter(_T3ConverterBase):
+    def __init__(self, t3_store: T3Store, factory_store: FactoryStore, id_factory: SessionIdFactory) -> None:
+        super().__init__(t3_store, id_factory)
+        self._factory_store = factory_store
+        self._builder = FactoryRecordBuilder()
+
+    def _resolve_id(self, source_id: str, timestamp: str) -> str:
+        return self._id_factory.create(stable_session_uuid(source_id))
+
+    def _destination(self, resolved_id: str, timestamp: str, cwd: str) -> Path:
+        return self._factory_store.destination_path(resolved_id, cwd)
+
+    def _count(self, destination: Path) -> int:
+        return _count_jsonl_records(destination)
+
+    def write(self, plan: ConversionPlan, *, overwrite: bool = False) -> None:
+        self._factory_store.write(plan.destination, plan.records, overwrite=overwrite)
+
+
+class T3ToWindsurfConverter(_T3ConverterBase):
+    def __init__(self, t3_store: T3Store, windsurf_store: WindsurfStore, id_factory: SessionIdFactory) -> None:
+        super().__init__(t3_store, id_factory)
+        self._windsurf_store = windsurf_store
+        self._builder = WindsurfRecordBuilder()
+
+    def _resolve_id(self, source_id: str, timestamp: str) -> str:
+        return self._id_factory.create(stable_session_uuid(source_id))
+
+    def _destination(self, resolved_id: str, timestamp: str, cwd: str) -> Path:
+        return self._windsurf_store.destination_path(resolved_id)
+
+    def _count(self, destination: Path) -> int:
+        # Windsurf destinations are encrypted protobuf files that cannot be counted cheaply,
+        # so a destination that exists is always treated as changed (same as CodexToWindsurf).
+        return -1
+
+    def write(self, plan: ConversionPlan, *, overwrite: bool = False) -> None:
+        self._windsurf_store.write(plan.destination, plan.records, overwrite=overwrite)
+
+
+class T3ToGrokConverter(_T3ConverterBase):
+    def __init__(self, t3_store: T3Store, grok_store: GrokStore, id_factory: SessionIdFactory) -> None:
+        super().__init__(t3_store, id_factory)
+        self._grok_store = grok_store
+        self._builder = GrokRecordBuilder()
+
+    def _resolve_id(self, source_id: str, timestamp: str) -> str:
+        return self._id_factory.create(stable_session_uuid(source_id))
+
+    def _destination(self, resolved_id: str, timestamp: str, cwd: str) -> Path:
+        return self._grok_store.destination_path(resolved_id, cwd)
+
+    def _expected(self, records: list[JsonObject]) -> int:
+        return sum(1 for record in records if "_summary" not in record)
+
+    def _count(self, destination: Path) -> int:
+        return _count_grok_records(destination)
+
+    def write(self, plan: ConversionPlan, *, overwrite: bool = False) -> None:
+        self._grok_store.write(plan.destination, plan.records, overwrite=overwrite)
+
+
+class T3ToFreebuffConverter(_T3ConverterBase):
+    def __init__(self, t3_store: T3Store, freebuff_store: FreebuffStore, id_factory: SessionIdFactory) -> None:
+        super().__init__(t3_store, id_factory)
+        self._freebuff_store = freebuff_store
+        self._builder = FreebuffRecordBuilder()
+
+    def _resolve_id(self, source_id: str, timestamp: str) -> str:
+        return self._id_factory.create(stable_session_uuid(source_id))
+
+    def _destination(self, resolved_id: str, timestamp: str, cwd: str) -> Path:
+        return self._freebuff_store.destination_path(resolved_id, cwd)
+
+    def _count(self, destination: Path) -> int:
+        # The count covers every thread in the shared project database, not just this one,
+        # so it cannot be compared with one T3 thread. -1 keeps has_changes conservative.
+        return -1
+
+    def write(self, plan: ConversionPlan, *, overwrite: bool = False) -> None:
+        self._freebuff_store.write(plan.destination, plan.records, overwrite=overwrite)
+
+
+class T3RecordBuilder:
+    """EXPERIMENTAL. Build one T3 Code thread for the legacy V1 database (see ``T3Store.write``).
+
+    Keeps user and assistant text, in order. Compaction summaries become assistant messages,
+    and contextual messages are dropped, as in every other builder. T3 orders messages by
+    ``created_at`` and then by message id, so timestamps are made strictly increasing.
+    """
+
+    def __init__(self, provider: str) -> None:
+        if provider not in T3_PROVIDER_DRIVERS:
+            raise ValueError(f"unsupported T3 provider: {provider}")
+        self._provider = provider
+        self._model = T3_PROVIDER_DRIVERS[provider]
+
+    def build(self, session_id: str, cwd: str, timestamp: str, messages: list[TextMessage]) -> list[JsonObject]:
+        kept = [
+            message
+            for message in messages
+            if not message.is_contextual and (message.role in ("user", "assistant") or message.is_compaction) and message.text.strip()
+        ]
+        base_ms = iso_to_epoch_ms(timestamp)
+        rows: list[JsonObject] = []
+        previous_ms: int | None = None
+        for ordinal, message in enumerate(kept):
+            ms = iso_to_epoch_ms(message.timestamp) if message.timestamp else base_ms + ordinal
+            if previous_ms is not None and ms <= previous_ms:
+                ms = previous_ms + 1
+            previous_ms = ms
+            is_user = message.role == "user" and not message.is_compaction
+            rows.append({
+                "message_id": str(uuid5(NAMESPACE_URL, f"unisessions:{session_id}:message:{ordinal}")),
+                "role": "user" if is_user else "assistant",
+                "text": message.text,
+                "created_at": epoch_ms_to_iso(ms),
+            })
+
+        created = str(rows[0]["created_at"]) if rows else epoch_ms_to_iso(base_ms)
+        updated = str(rows[-1]["created_at"]) if rows else created
+        first_user = next((str(row["text"]) for row in rows if row["role"] == "user"), "")
+        title = first_user.strip().splitlines()[0].strip()[:80] if first_user.strip() else "Imported thread"
+
+        workspace_root = cwd or str(Path.home())
+        project_id = str(uuid5(NAMESPACE_URL, f"unisessions:project:{workspace_root}"))
+        project: JsonObject = {
+            "project_id": project_id,
+            "title": Path(workspace_root).name or workspace_root,
+            "workspace_root": workspace_root,
+            "created_at": created,
+            "updated_at": created,
+        }
+        thread: JsonObject = {
+            "thread_id": session_id,
+            "project_id": project_id,
+            "title": title,
+            "created_at": created,
+            "updated_at": updated,
+            # Imported history should ask before acting, not run with full access.
+            "runtime_mode": "approval-required",
+            "interaction_mode": "default",
+            "model_selection_json": json.dumps({"instanceId": self._provider, "model": self._model}, separators=(",", ":")),
+        }
+        return [{"thread": thread, "project": project, "messages": rows}]
+
+
+class ToT3Converter:
+    """EXPERIMENTAL. Write any session into a T3 Code thread.
+
+    The thread goes into a legacy V1 ``state.sqlite`` in a new T3 home. T3 imports it when it
+    first creates ``statev2.sqlite``. Only text is written (no tool calls, approvals, or
+    checkpoints), and the model is the target driver's default, because model names do not
+    carry across providers.
+    """
+
+    def __init__(self, source_store: SessionStore, t3_store: T3Store, id_factory: SessionIdFactory, provider: str) -> None:
+        self._source_store = source_store
+        self._t3_store = t3_store
+        self._id_factory = id_factory
+        self._extractor = MessageExtractor()
+        self._builder = T3RecordBuilder(provider)
+
+    def plan(self, session_id: str, *, target_id: str | None = None) -> ConversionPlan:
+        source = self._source_store.load(session_id)
+        timestamp = _timestamp_or_now(source.timestamp)
+        resolved_id = target_id or self._id_factory.create(stable_session_uuid(source.session_id))
+        records = self._builder.build(resolved_id, source.cwd, timestamp, self._extractor.from_session(source))
+        return ConversionPlan(source, self._t3_store.legacy_database, records)
+
+    def destination_taken(self, plan: ConversionPlan) -> bool:
+        """Whether this thread already exists. Every thread shares one database file."""
+        return self._t3_store.thread_exists(plan.destination, self._thread_id(plan))
+
+    def has_changes(self, session_id: str) -> bool:
+        try:
+            plan = self.plan(session_id)
+        except FileNotFoundError:
+            return True
+        messages = plan.records[0].get("messages")
+        expected = len(messages) if isinstance(messages, list) else -1
+        count = self._t3_store.thread_message_count(plan.destination, self._thread_id(plan))
+        return count is None or count != expected
+
+    def write(self, plan: ConversionPlan, *, overwrite: bool = False) -> None:
+        self._t3_store.write(plan.destination, plan.records, overwrite=overwrite)
+
+    @staticmethod
+    def _thread_id(plan: ConversionPlan) -> str:
+        thread = plan.records[0].get("thread")
+        return str(thread.get("thread_id", "")) if isinstance(thread, dict) else ""
+

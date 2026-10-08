@@ -1,6 +1,6 @@
 # UniSessions
 
-UniSessions is an SDK-first AI CLI session converter for moving sessions between Codex, Claude Code, Pi, OpenCode, Devin, Factory, Windsurf Cascade, Grok Build, and Freebuff Desktop, with trace export for HuggingFace and fine-tuning, plus an MCP chat recall server built on top.
+UniSessions is an SDK-first AI CLI session converter for moving sessions between Codex, Claude Code, Pi, OpenCode, Devin, Factory, Windsurf Cascade, Grok Build, and Freebuff Desktop, reading T3 Code threads too, with trace export for HuggingFace and fine-tuning, plus an MCP chat recall server built on top.
 
 <div align="center">
 
@@ -22,8 +22,8 @@ I use a lot of AI coding CLIs Codex Claude Code Pi OpenCode Devin Factory Windsu
 [![PyPI](https://img.shields.io/pypi/v/unisessions?logo=pypi&logoColor=white)](https://pypi.org/project/unisessions/)
 [![Python 3.11+](https://img.shields.io/badge/Python-3.11+-blue?logo=python&logoColor=white)](https://www.python.org/)
 [![Tests](https://img.shields.io/badge/Tests-40%20passing-green)]()
-[![Providers](https://img.shields.io/badge/Providers-9%20(Codex%20%7C%20Pi%20%7C%20OpenCode%20%7C%20Claude%20%7C%20Devin%20%7C%20Factory%20%7C%20Windsurf%20%7C%20Grok%20%7C%20Freebuff)-purple)]()
-[![Conversions](https://img.shields.io/badge/Conversions-72%20directions-orange)]()
+[![Providers](https://img.shields.io/badge/Providers-10%20(Codex%20%7C%20Pi%20%7C%20OpenCode%20%7C%20Claude%20%7C%20Devin%20%7C%20Factory%20%7C%20Windsurf%20%7C%20Grok%20%7C%20Freebuff%20%7C%20T3)-purple)]()
+[![Conversions](https://img.shields.io/badge/Conversions-90%20directions-orange)]()
 [![Traces](https://img.shields.io/badge/Trace%20Export-3%20formats-blue)]()
 [![MCP](https://img.shields.io/badge/MCP-FastMCP-teal?logo=fastapi&logoColor=white)]()
 [![License](https://img.shields.io/badge/License-MIT-yellow)]()
@@ -85,6 +85,7 @@ python -m unisessions list factory
 python -m unisessions list windsurf
 python -m unisessions list grok
 python -m unisessions list freebuff
+python -m unisessions list t3
 ```
 
 Or clone the repo:
@@ -106,6 +107,8 @@ python -m unisessions devin-to-pi <session-id> --write
 python -m unisessions factory-to-pi <session-id> --write
 python -m unisessions windsurf-to-pi <session-id> --write
 python -m unisessions freebuff-to-pi <session-id> --write
+python -m unisessions t3-to-pi <session-id> --write
+python -m unisessions t3-to-codex <session-id> --write
 ```
 
 Export a session as a HuggingFace trace:
@@ -139,8 +142,11 @@ python -m unisessions.mcp_server
 | [Windsurf](https://windsurf.com) (Cascade) | `windsurf` | AES-256-GCM encrypted protobuf trajectory files | UUID v4 |
 | [Grok](https://x.ai) (Grok Build) | `grok` | ACP `updates.jsonl` + `summary.json` per session dir | session directory name |
 | [Freebuff](https://freebuff.com) (Freebuff Desktop) | `freebuff` | Per-project SQLite `desktop-v2.db` (`threads` + `messages`) + `project.json` | thread id |
+| [T3 Code](https://t3.codes) | `t3` (source) and experimental target | SQLite `userdata/statev2.sqlite` (legacy `state.sqlite`). Reads are read-only. | thread id |
 
 ## All 72 conversion directions
+
+T3 Code adds 18 directions, 90 in total. Reading T3 is stable: nine `t3-to-<provider>` commands. Writing into T3 is **experimental**: nine `<provider>-to-t3` commands write a thread into a new, empty T3 home, which T3 imports the first time it starts there. The live T3 data directory is never written. See [docs/stores.md](docs/stores.md#writing-into-t3-experimental).
 
 | From \ To | Pi | Codex | OpenCode | Claude | Devin | Factory | Windsurf | Grok | Freebuff |
 |---|---|---|---|---|---|---|---|---|---|
@@ -374,7 +380,7 @@ Environment knobs: `UNISESSIONS_MCP_TRANSPORT`, `UNISESSIONS_MCP_HOST`,
 
 `search_chats` returns a structured response with `search_metadata` (total_matches, deduplicated, sessions_searched, messages_searched, truncated) and a `results` array ranked by relevance score. Duplicate messages across compaction cycles are collapsed to a single hit with a `duplicate_count` field.
 
-`search_chats` supports provider (`codex`, `pi`, `opencode`, `claude`, `devin`, `factory`, `windsurf`, `grok`, `freebuff`), cwd,
+`search_chats` supports provider (`codex`, `pi`, `opencode`, `claude`, `devin`, `factory`, `windsurf`, `grok`, `freebuff`, `t3`), cwd,
 session_id, role (`user`, `assistant`), message type (`message`, `compaction`,
 `contextual`), `exclude_keywords` to filter out false positives, `max_per_session`
 (default 5) to prevent one session from flooding results, date range (`after`,
@@ -488,7 +494,7 @@ session-export/
     jsonl.py                  # JSONL read/write helpers (orjson when available)
     models.py                 # SessionSummary, TextMessage, NativeSession, ConversionPlan
     paths.py                  # WindowsDefaults, path encoding, SessionIdFactory, timestamps
-    stores.py                 # CodexStore, PiStore, PiDcpStore, OpenCodeStore, ClaudeStore, DevinStore, FactoryStore, WindsurfStore, GrokStore, FreebuffStore
+    stores.py                 # CodexStore, PiStore, PiDcpStore, OpenCodeStore, ClaudeStore, DevinStore, FactoryStore, WindsurfStore, GrokStore, FreebuffStore, T3Store (read; experimental write)
     converters.py             # Extractors, builders, 72 converters
     traces.py                 # STS, OpenAI, ShareGPT trace format builders
     search.py                 # parsed SQLite FTS5 chat recall index/search
@@ -535,6 +541,7 @@ never the reverse.
 | Windsurf Cascade | `~/.codeium/windsurf/cascade/` or `WINDSURF_CONFIG_DIR` |
 | Grok Build | `$GROK_HOME/sessions` or `~/.grok/sessions` |
 | Freebuff Desktop | `$FREEBUFF_CONFIG_DIR/projects` or `~/.config/freebuff-desktop/projects` |
+| T3 Code | `$T3CODE_HOME/userdata` or `~/.t3/userdata` (`statev2.sqlite`, then legacy `state.sqlite`). Writes need an explicit `--t3-home` |
 
 ## Data fidelity
 

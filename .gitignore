@@ -5,3 +5,11 @@
 !README.md
 !docs/**
 !mkdocs.yml
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+*.egg
+build/
+dist/

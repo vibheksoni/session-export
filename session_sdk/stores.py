@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 try:
@@ -1926,3 +1927,429 @@ class OpenCodeStore(SessionStore):
         if isinstance(messages, list):
             return len(messages)
         return 0
+
+
+# Model defaults for each T3 provider driver. The instance id of a built-in driver is the driver
+# name (T3 Code packages/contracts/src/providerInstance.ts, defaultInstanceIdForDriver), and the
+# model is DEFAULT_MODEL_BY_PROVIDER (packages/contracts/src/model.ts). Keep in sync with T3.
+T3_PROVIDER_DRIVERS: dict[str, str] = {
+    "codex": "gpt-6-astra",
+    "claudeAgent": "claude-fable-5-1",
+    "opencode": "openai/gpt-5",
+    "pi": "default",
+    "grok": "grok-build",
+}
+
+# Marks legacy databases created by unisessions, in the SQLite header. T3 ignores it.
+_T3_UNISESSIONS_APPLICATION_ID = 0x554E4953
+_T3_LEGACY_TEMPLATE = Path(__file__).resolve().parent / "data" / "t3_state_v1.sql"
+
+
+class T3WriteError(RuntimeError):
+    """A T3 write was refused: the target is unsafe or not a unisessions database."""
+
+
+def _live_userdata() -> Path:
+    """The live T3 data directory. Writes must never target it."""
+    env = os.environ.get("T3CODE_HOME")
+    base = Path(env) if env else Path.home() / ".t3"
+    return base / "userdata"
+
+
+def _record_object(record: JsonObject, key: str) -> JsonObject:
+    return _as_object(record.get(key), key)
+
+
+def _as_object(value: object, label: str) -> JsonObject:
+    if not isinstance(value, dict):
+        raise T3WriteError(f"T3 record field '{label}' must be an object")
+    return value
+
+
+def _record_list(record: JsonObject, key: str) -> list[object]:
+    value = record.get(key)
+    if not isinstance(value, list):
+        raise T3WriteError(f"T3 record field '{key}' must be a list")
+    return value
+
+
+def _record_text(record: JsonObject, key: str) -> str:
+    value = record.get(key)
+    if not isinstance(value, str):
+        raise T3WriteError(f"T3 record field '{key}' must be text")
+    return value
+
+
+@dataclass(frozen=True, slots=True)
+class _T3Thread:
+    thread_id: str
+    database: Path
+    cwd: str
+    created_at: str
+    instance_id: str
+    model: str
+    message_count: int
+    v2: bool
+
+
+class T3Store(SessionStore):
+    """Read-only store for T3 Code (t3.codes) threads.
+
+    T3 keeps its data under ``<T3 home>/userdata``. Two SQLite databases can exist:
+
+    - ``statev2.sqlite`` (current): threads and messages are projected into
+      ``orchestration_v2_projection_threads`` and ``orchestration_v2_projection_messages``.
+      The full object of each row is in ``payload_json``.
+    - ``state.sqlite`` (legacy V1): plain ``projection_threads`` and
+      ``projection_thread_messages`` tables.
+
+    A thread comes from ``statev2.sqlite`` when that database has it, otherwise from
+    ``state.sqlite``. Both databases are opened read-only. T3 keeps the live database
+    open while the app runs, so this store never writes to it.
+
+    Each thread gets the virtual path ``<database>/<thread id>``. The file itself holds
+    many threads, and the search index keys sessions by path.
+    """
+
+    provider_name = "t3"
+    _V2_DB = "statev2.sqlite"
+    _V1_DB = "state.sqlite"
+
+    def __init__(self, t3_home: Path) -> None:
+        self._userdata = Path(t3_home) / "userdata"
+
+    @property
+    def root(self) -> Path:
+        return self._userdata
+
+    def list(self, *, workers: int = 1) -> list[SessionSummary]:
+        return [
+            SessionSummary(
+                provider=self.provider_name,
+                session_id=thread.thread_id,
+                cwd=thread.cwd,
+                timestamp=thread.created_at,
+                path=self._virtual_path(thread),
+                message_count=thread.message_count,
+            )
+            for thread in self._catalog().values()
+        ]
+
+    def load(self, session_id: str) -> NativeSession:
+        thread = self._catalog().get(session_id)
+        if thread is None:
+            raise FileNotFoundError(f"T3 thread not found: {session_id}")
+        return self._load_thread(thread)
+
+    def load_path(self, path: Path) -> NativeSession:
+        database, thread_id = Path(path).parent, Path(path).name
+        for thread in self._threads_in(database):
+            if thread.thread_id == thread_id:
+                return self._load_thread(thread)
+        raise FileNotFoundError(f"T3 thread not found: {path}")
+
+    def _databases(self) -> list[Path]:
+        """Databases in preference order: the current V2 file, then the legacy V1 file."""
+        return [path for path in (self._userdata / self._V2_DB, self._userdata / self._V1_DB) if path.is_file()]
+
+    def _catalog(self) -> dict[str, _T3Thread]:
+        catalog: dict[str, _T3Thread] = {}
+        for database in self._databases():
+            for thread in self._threads_in(database):
+                catalog.setdefault(thread.thread_id, thread)
+        return catalog
+
+    @staticmethod
+    def _virtual_path(thread: _T3Thread) -> Path:
+        return thread.database / thread.thread_id
+
+    @staticmethod
+    def _connect(database: Path) -> _sqlite3.Connection:
+        # mode=ro: the database is never written, even by accident.
+        uri = database.resolve().as_uri() + "?mode=ro"
+        connection = _sqlite3.connect(uri, uri=True)
+        connection.row_factory = _sqlite3.Row
+        return connection
+
+    @staticmethod
+    def _has_table(connection: _sqlite3.Connection, name: str) -> bool:
+        return connection.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (name,)).fetchone() is not None
+
+    def _threads_in(self, database: Path) -> list[_T3Thread]:
+        connection = self._connect(database)
+        try:
+            if self._has_table(connection, "orchestration_v2_projection_threads"):
+                return self._v2_threads(connection, database)
+            return self._v1_threads(connection, database)
+        finally:
+            connection.close()
+
+    def _v2_threads(self, connection: _sqlite3.Connection, database: Path) -> list[_T3Thread]:
+        roots = self._workspace_roots(connection)
+        counts = {
+            str(row["thread_id"]): int(row["count"])
+            for row in connection.execute(
+                "SELECT thread_id, COUNT(*) AS count FROM orchestration_v2_projection_messages WHERE role IN ('user', 'assistant') GROUP BY thread_id"
+            )
+        }
+        threads: list[_T3Thread] = []
+        for row in connection.execute("SELECT thread_id, project_id, created_at, payload_json FROM orchestration_v2_projection_threads WHERE deleted_at IS NULL"):
+            payload = _json_object(row["payload_json"])
+            selection = _json_object_value(payload, "modelSelection")
+            worktree = payload.get("worktreePath")
+            cwd = worktree if isinstance(worktree, str) and worktree else roots.get(str(row["project_id"]), "")
+            threads.append(
+                _T3Thread(
+                    thread_id=str(row["thread_id"]),
+                    database=database,
+                    cwd=cwd,
+                    created_at=str(payload.get("createdAt") or row["created_at"]),
+                    instance_id=_string_field(selection, "instanceId"),
+                    model=_string_field(selection, "model"),
+                    message_count=counts.get(str(row["thread_id"]), 0),
+                    v2=True,
+                )
+            )
+        return threads
+
+    def _v1_threads(self, connection: _sqlite3.Connection, database: Path) -> list[_T3Thread]:
+        roots = self._workspace_roots(connection)
+        counts = {
+            str(row["thread_id"]): int(row["count"])
+            for row in connection.execute(
+                "SELECT thread_id, COUNT(*) AS count FROM projection_thread_messages WHERE role IN ('user', 'assistant') GROUP BY thread_id"
+            )
+        }
+        threads: list[_T3Thread] = []
+        for row in connection.execute("SELECT * FROM projection_threads WHERE deleted_at IS NULL"):
+            keys = row.keys()
+            selection = _json_object(row["model_selection_json"]) if "model_selection_json" in keys else {}
+            worktree = row["worktree_path"]
+            cwd = worktree if isinstance(worktree, str) and worktree else roots.get(str(row["project_id"]), "")
+            threads.append(
+                _T3Thread(
+                    thread_id=str(row["thread_id"]),
+                    database=database,
+                    cwd=cwd,
+                    created_at=str(row["created_at"]),
+                    instance_id=_string_field(selection, "instanceId") or _string_field(selection, "provider"),
+                    model=_string_field(selection, "model") or str(row["model"] or ""),
+                    message_count=counts.get(str(row["thread_id"]), 0),
+                    v2=False,
+                )
+            )
+        return threads
+
+    def _workspace_roots(self, connection: _sqlite3.Connection) -> dict[str, str]:
+        if not self._has_table(connection, "projection_projects"):
+            return {}
+        return {str(row["project_id"]): str(row["workspace_root"]) for row in connection.execute("SELECT project_id, workspace_root FROM projection_projects")}
+
+    def _load_thread(self, thread: _T3Thread) -> NativeSession:
+        connection = self._connect(thread.database)
+        try:
+            records = self._v2_records(connection, thread) if thread.v2 else self._v1_records(connection, thread)
+        finally:
+            connection.close()
+        return NativeSession(
+            provider=self.provider_name,
+            session_id=thread.thread_id,
+            cwd=thread.cwd,
+            timestamp=thread.created_at,
+            path=self._virtual_path(thread),
+            records=records,
+        )
+
+    @staticmethod
+    def _v2_records(connection: _sqlite3.Connection, thread: _T3Thread) -> list[JsonObject]:
+        rows = connection.execute(
+            "SELECT payload_json FROM orchestration_v2_projection_messages WHERE thread_id = ? ORDER BY created_at ASC, message_id ASC",
+            (thread.thread_id,),
+        )
+        records: list[JsonObject] = []
+        for row in rows:
+            payload = _json_object(row["payload_json"])
+            records.append(_t3_record(payload.get("role"), payload.get("text"), payload.get("createdAt"), thread))
+        return records
+
+    @staticmethod
+    def _v1_records(connection: _sqlite3.Connection, thread: _T3Thread) -> list[JsonObject]:
+        rows = connection.execute(
+            "SELECT role, text, created_at FROM projection_thread_messages WHERE thread_id = ? AND role IN ('user', 'assistant') ORDER BY created_at ASC, message_id ASC",
+            (thread.thread_id,),
+        )
+        return [_t3_record(row["role"], row["text"], row["created_at"], thread) for row in rows]
+
+    @property
+    def legacy_database(self) -> Path:
+        """``state.sqlite``. Writes go here. T3 imports it when it creates ``statev2.sqlite``."""
+        return self._userdata / self._V1_DB
+
+    def thread_exists(self, database: Path, thread_id: str) -> bool:
+        return self.thread_message_count(database, thread_id) is not None
+
+    def thread_message_count(self, database: Path, thread_id: str) -> int | None:
+        """Messages stored for a legacy thread, or None when the database or thread is missing."""
+        if not database.is_file():
+            return None
+        connection = self._connect(database)
+        try:
+            if not self._has_table(connection, "projection_threads"):
+                return None
+            found = connection.execute("SELECT 1 FROM projection_threads WHERE thread_id = ?", (thread_id,)).fetchone()
+            if found is None:
+                return None
+            row = connection.execute("SELECT COUNT(*) AS count FROM projection_thread_messages WHERE thread_id = ?", (thread_id,)).fetchone()
+            return int(row["count"])
+        finally:
+            connection.close()
+
+    def write(self, path: Path, records: list[JsonObject], *, overwrite: bool = False) -> None:
+        """EXPERIMENTAL. Write thread bundles (see ``T3RecordBuilder``) into a legacy V1 database.
+
+        T3 only imports legacy threads when it creates ``statev2.sqlite``, so the target home
+        must not have one yet. A new database is built in a staging file and moved into place,
+        so a failed write never leaves a partial ``state.sqlite``. An existing database must
+        have been created by unisessions (checked through ``application_id``).
+        """
+        self._check_write_target(path)
+        if path.exists():
+            self._append(path, records, overwrite=overwrite)
+            return
+        path.parent.mkdir(parents=True, exist_ok=True)
+        staging = path.with_name(f"{path.name}.unisessions-tmp")
+        staging.unlink(missing_ok=True)
+        try:
+            connection = _sqlite3.connect(staging)
+            try:
+                connection.executescript(_T3_LEGACY_TEMPLATE.read_text(encoding="utf-8"))
+                connection.execute(f"PRAGMA application_id = {_T3_UNISESSIONS_APPLICATION_ID}")
+                with connection:
+                    for record in records:
+                        self._write_thread(connection, record, overwrite=False)
+            finally:
+                connection.close()
+            os.replace(staging, path)
+        except BaseException:
+            staging.unlink(missing_ok=True)
+            raise
+
+    def _append(self, path: Path, records: list[JsonObject], *, overwrite: bool) -> None:
+        connection = _sqlite3.connect(path)
+        try:
+            marker = int(connection.execute("PRAGMA application_id").fetchone()[0])
+            if marker != _T3_UNISESSIONS_APPLICATION_ID:
+                raise T3WriteError(f"{path} was not created by unisessions. Refusing to modify it.")
+            with connection:
+                for record in records:
+                    self._write_thread(connection, record, overwrite=overwrite)
+        finally:
+            connection.close()
+
+    def _write_thread(self, connection: _sqlite3.Connection, record: JsonObject, *, overwrite: bool) -> None:
+        thread = _record_object(record, "thread")
+        project = _record_object(record, "project")
+        messages = _record_list(record, "messages")
+        thread_id = _record_text(thread, "thread_id")
+        if self.thread_exists_in(connection, thread_id):
+            if not overwrite:
+                raise FileExistsError(f"T3 thread already exists in the target database: {thread_id}")
+            connection.execute("DELETE FROM projection_thread_messages WHERE thread_id = ?", (thread_id,))
+            connection.execute("DELETE FROM projection_threads WHERE thread_id = ?", (thread_id,))
+        connection.execute(
+            "INSERT OR IGNORE INTO projection_projects (project_id, title, workspace_root, scripts_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                _record_text(project, "project_id"),
+                _record_text(project, "title"),
+                _record_text(project, "workspace_root"),
+                "[]",
+                _record_text(project, "created_at"),
+                _record_text(project, "updated_at"),
+            ),
+        )
+        connection.execute(
+            """
+            INSERT INTO projection_threads (
+                thread_id, project_id, title, branch, worktree_path, created_at, updated_at,
+                runtime_mode, interaction_mode, model_selection_json
+            ) VALUES (?, ?, ?, NULL, NULL, ?, ?, ?, ?, ?)
+            """,
+            (
+                thread_id,
+                _record_text(thread, "project_id"),
+                _record_text(thread, "title"),
+                _record_text(thread, "created_at"),
+                _record_text(thread, "updated_at"),
+                _record_text(thread, "runtime_mode"),
+                _record_text(thread, "interaction_mode"),
+                _record_text(thread, "model_selection_json"),
+            ),
+        )
+        rows = [
+            (
+                _record_text(message, "message_id"),
+                thread_id,
+                _record_text(message, "role"),
+                _record_text(message, "text"),
+                _record_text(message, "created_at"),
+                _record_text(message, "created_at"),
+            )
+            for message in (_as_object(item, "message") for item in messages)
+        ]
+        connection.executemany(
+            """
+            INSERT INTO projection_thread_messages (
+                message_id, thread_id, turn_id, role, text, is_streaming, created_at, updated_at, attachments_json, context_json
+            ) VALUES (?, ?, NULL, ?, ?, 0, ?, ?, '[]', NULL)
+            """,
+            rows,
+        )
+
+    @staticmethod
+    def thread_exists_in(connection: _sqlite3.Connection, thread_id: str) -> bool:
+        return connection.execute("SELECT 1 FROM projection_threads WHERE thread_id = ?", (thread_id,)).fetchone() is not None
+
+    def _check_write_target(self, path: Path) -> None:
+        if path.name != self._V1_DB:
+            raise T3WriteError(f"T3 writes go to {self._V1_DB}, not {path.name}.")
+        userdata = path.parent
+        if (userdata / self._V2_DB).exists():
+            raise T3WriteError(
+                f"{userdata} already has {self._V2_DB}. T3 imports legacy threads only when it creates that file, "
+                "so write to a new, empty T3 home."
+            )
+        if userdata.resolve() == _live_userdata().resolve():
+            raise T3WriteError(
+                f"{userdata} is the live T3 Code data directory. Writes must target a new, empty T3 home (--t3-home)."
+            )
+
+
+def _json_object(value: object) -> JsonObject:
+    """Parse a JSON object column. NULL, bad JSON, and non-object values become an empty dict."""
+    if not isinstance(value, (str, bytes)):
+        return {}
+    try:
+        parsed = _json_loads(value)
+    except ValueError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _json_object_value(payload: JsonObject, key: str) -> JsonObject:
+    value = payload.get(key)
+    return value if isinstance(value, dict) else {}
+
+
+def _string_field(payload: JsonObject, key: str) -> str:
+    value = payload.get(key)
+    return value if isinstance(value, str) else ""
+
+
+def _t3_record(role: object, text: object, created_at: object, thread: _T3Thread) -> JsonObject:
+    return {
+        "role": role if isinstance(role, str) else "",
+        "text": text if isinstance(text, str) else "",
+        "created_at": created_at if isinstance(created_at, str) else thread.created_at,
+        "instance_id": thread.instance_id,
+        "model": thread.model,
+    }

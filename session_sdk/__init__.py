@@ -64,6 +64,17 @@ from session_sdk.converters import (
     PiToGrokConverter,
     PiToOpenCodeConverter,
     PiToWindsurfConverter,
+    T3RecordBuilder,
+    T3ToClaudeConverter,
+    T3ToCodexConverter,
+    T3ToDevinConverter,
+    T3ToFactoryConverter,
+    T3ToFreebuffConverter,
+    T3ToGrokConverter,
+    T3ToOpenCodeConverter,
+    T3ToPiConverter,
+    T3ToWindsurfConverter,
+    ToT3Converter,
     WindsurfToClaudeConverter,
     WindsurfToCodexConverter,
     WindsurfToDevinConverter,
@@ -77,7 +88,7 @@ from session_sdk.jsonl import JsonlFile
 from session_sdk.models import ConversionPlan, NativeSession, SessionSummary, TextMessage
 from session_sdk.paths import SessionIdFactory, WindowsDefaults, encode_pi_cwd
 from session_sdk.search import ChatSearchResult, SearchResponse, SessionSearchEngine, SessionSearchIndex, SessionSearchResult, StalePolicy
-from session_sdk.stores import ClaudeStore, CodexStore, DevinStore, FactoryStore, FreebuffStore, GrokStore, OpenCodeStore, PiDcpStore, PiStore, WindsurfStore
+from session_sdk.stores import T3_PROVIDER_DRIVERS, ClaudeStore, CodexStore, DevinStore, FactoryStore, FreebuffStore, GrokStore, OpenCodeStore, PiDcpStore, PiStore, T3Store, T3WriteError, WindsurfStore
 from session_sdk.traces import (
     OpenAITraceBuilder,
     ShareGPTTraceBuilder,
@@ -164,6 +175,20 @@ __all__ = [
     "PiToGrokConverter",
     "PiToOpenCodeConverter",
     "PiToWindsurfConverter",
+    "T3RecordBuilder",
+    "T3ToClaudeConverter",
+    "T3ToCodexConverter",
+    "T3ToDevinConverter",
+    "T3ToFactoryConverter",
+    "T3ToFreebuffConverter",
+    "T3ToGrokConverter",
+    "T3ToOpenCodeConverter",
+    "T3ToPiConverter",
+    "T3ToWindsurfConverter",
+    "T3Store",
+    "T3WriteError",
+    "T3_PROVIDER_DRIVERS",
+    "ToT3Converter",
     "WindsurfStore",
     "WindsurfToClaudeConverter",
     "WindsurfToCodexConverter",

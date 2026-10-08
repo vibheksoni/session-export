@@ -70,6 +70,9 @@ unisessions-mcp = "unisessions.mcp_server:main"
 [tool.setuptools]
 packages = ["session_sdk", "unisessions"]
 
+[tool.setuptools.package-data]
+session_sdk = ["data/*.sql"]
+
 [tool.mypy]
 python_version = "3.11"
 strict = true
