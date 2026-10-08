@@ -385,7 +385,7 @@ How it works:
   schema, and T3 does the rest. Writing V2 events directly is not done.
 - The schema comes from `session_sdk/data/t3_state_v1.sql`. It was generated from the T3
   checkout at commit `9a3070b` by running T3's own migrations 1 to 54 on an empty database.
-  `tools/t3/schema_dump.ts` is the generator. Migrations 55 and later are not in the file, because
+  Migrations 55 and later are not in the file, because
   T3 creates them itself.
 - The thread keeps the session's title (first user message), working directory (the project's
   workspace root), and user and assistant text in order. Tool calls, approvals, checkpoints, and
@@ -417,12 +417,10 @@ Verify a write:
    The server log should show `Imported legacy v1 thread shells`.
 3. Check `<new home>/userdata/statev2.sqlite` or open the thread in T3.
 
-Regenerate the schema template after a T3 migration change. Copy `tools/t3/schema_dump.ts` into
-`apps/server/scripts/` of a T3 checkout, then run:
-
-```sh
-node scripts/schema_dump.ts <empty-db-path> <output.sql>
-```
-
-Then replace `session_sdk/data/t3_state_v1.sql` with the output, keeping the header comment.
+Regenerate the schema template after a T3 migration change. In a T3 checkout, write a short
+script that runs `runMigrations({ toMigrationInclusive: 54 })` from `apps/server/src/persistence/Migrations.ts`
+on an empty SQLite file. Then dump the non-internal `sqlite_master` SQL and every row of
+`effect_sql_migrations` as SQL statements. Replace `session_sdk/data/t3_state_v1.sql` with the output,
+keeping the header comment. The script is not kept in this repo, because the Python package does
+not depend on it.
 
