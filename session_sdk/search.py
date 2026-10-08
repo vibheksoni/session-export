@@ -843,7 +843,9 @@ class SessionSearchIndex:
     def _path_key(path: Path) -> str:
         # normcase(abspath) needs no filesystem call; Path.resolve() cost 0.25 ms per session
         # (two GetFinalPathName calls on Windows) and ran for every session on every search.
-        return os.path.normcase(os.path.abspath(str(path))).lower()
+        # normcase folds case only on Windows. Lowercasing here too would break paths on
+        # case-sensitive filesystems, because the key is later used as a file path.
+        return os.path.normcase(os.path.abspath(str(path)))
 
     @staticmethod
     def _message_type(message: TextMessage) -> str:

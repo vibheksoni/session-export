@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import os
 import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from session_sdk.jsonl import JsonlFile
 from session_sdk.search import SessionSearchEngine, SessionSearchIndex
@@ -116,3 +118,13 @@ class IndexV2Tests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PathKeyTests(unittest.TestCase):
+    def test_path_keys_keep_case_when_the_filesystem_is_case_sensitive(self) -> None:
+        # On Linux normcase does not fold case, so the key must still name the real file.
+        with mock.patch("session_sdk.search.os.path.normcase", side_effect=lambda value: value):
+            key = SessionSearchIndex._path_key(Path("/Tmp/Sessions/Rollout.jsonl"))
+        self.assertEqual(key, os.path.abspath("/Tmp/Sessions/Rollout.jsonl"))
+        self.assertIn("Sessions", key)
+
