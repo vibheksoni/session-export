@@ -4,7 +4,7 @@ import functools
 import json
 import re
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Callable, Protocol
 from uuid import NAMESPACE_URL, uuid5
@@ -49,12 +49,16 @@ from session_sdk.stores import (
     FactoryStore,
     FreebuffStore,
     GrokStore,
+    OmpStore,
     OpenCodeStore,
     PiDcpStore,
     PiStore,
     SessionStore,
     T3Store,
     WindsurfStore,
+    destination_exists,
+    grok_db_message_count,
+    omp_title_slot,
 )
 
 
@@ -317,6 +321,128 @@ class MessageExtractor:
                 )
             )
         return self._with_outputs(messages, outputs)
+
+    @_shaped
+    def from_omp(self, session: NativeSession) -> list[TextMessage]:
+        """Extract text history from an OMP session.
+
+        An OMP session is a tree: each entry names its parent, and rewinding a conversation
+        starts a new branch beside the old one in the same file. Only the active branch is read,
+        from the root to omp's leaf. User and assistant text is kept and compaction summaries
+        become compaction messages. A ``/skill:`` request or a collaborator's prompt is stored
+        as a user-attributed ``custom_message`` and is kept as a user message, as omp counts it.
+        Injected text is contextual: ``developer`` messages (system reminders), ``synthetic``
+        user messages, other ``custom_message`` entries, and summaries of abandoned branches.
+        A ``reset_boundary`` (``/clear``) takes everything before it out of omp's context, so
+        those messages turn contextual too. Thinking, tool calls, tool results, shell runs and
+        file mentions are skipped, matching the text-history contract of every other provider.
+        """
+        messages: list[TextMessage] = []
+        current_provider: str | None = None
+        current_model: str | None = None
+        for record in self._omp_active_branch(session.records):
+            rtype = record.get("type")
+            timestamp = string_value(record, "timestamp") or session.timestamp
+            if rtype == "model_change":
+                provider, model = self._omp_model_change(record)
+                current_provider = provider or current_provider
+                current_model = model or current_model
+            elif rtype == "compaction":
+                summary = string_value(record, "summary") or ""
+                if summary:
+                    messages.append(TextMessage("user", summary, timestamp, is_compaction=True))
+            elif rtype == "reset_boundary":
+                messages = [replace(message, is_contextual=True) for message in messages]
+            elif rtype == "custom_message":
+                text = self._content_text(record.get("content"))
+                user_turn = record.get("attribution") == "user" and record.get("customType") in self._OMP_USER_PROMPT_TYPES
+                if text:
+                    messages.append(TextMessage("user", text, timestamp, is_contextual=not user_turn))
+            elif rtype == "branch_summary":
+                text = string_value(record, "summary") or ""
+                if text:
+                    messages.append(TextMessage("user", text, timestamp, is_contextual=True))
+            elif rtype == "message":
+                message = as_object(record.get("message"))
+                if message is None:
+                    continue
+                role = string_value(message, "role")
+                if role not in ("user", "developer", "assistant"):
+                    continue
+                text = self._content_text(message.get("content"))
+                if not text:
+                    continue
+                if role == "assistant":
+                    messages.append(
+                        TextMessage(
+                            "assistant",
+                            text,
+                            timestamp,
+                            model=string_value(message, "model") or current_model,
+                            provider=string_value(message, "provider") or current_provider,
+                            api=string_value(message, "api"),
+                        )
+                    )
+                else:
+                    contextual = role == "developer" or message.get("synthetic") is True or self._is_contextual(text)
+                    messages.append(TextMessage("user", text, timestamp, is_contextual=contextual))
+        return messages
+
+    # Custom messages that start a user turn in omp (``isUserTurnInitiator``).
+    _OMP_USER_PROMPT_TYPES = ("skill-prompt", "collab-prompt")
+
+    @staticmethod
+    def _omp_active_branch(records: list[JsonObject]) -> list[JsonObject]:
+        """The entries on an OMP session's active branch, root first.
+
+        Follows omp's ``resolveSessionLeafId``: the leaf is the last entry, unless that entry is
+        a ``model_usage`` record whose ``activeLeafId`` names another one; ``null`` there means
+        the session was cleared, so nothing is on the branch. A leaf that is not in the file
+        falls back to the newest entry that selects itself. Files without entry ids predate the
+        tree format and are read in file order.
+        """
+        entries = [record for record in records if record.get("type") not in ("title", "session")]
+        by_id = {entry_id: entry for entry in entries if isinstance(entry_id := entry.get("id"), str)}
+        if not entries or not by_id:
+            return entries
+
+        def leaf_of(entry: JsonObject) -> object:
+            if entry.get("type") == "model_usage" and "activeLeafId" in entry:
+                return entry.get("activeLeafId")
+            return entry.get("id")
+
+        last = entries[-1]
+        leaf = leaf_of(last)
+        if leaf is None and last.get("type") == "model_usage":
+            return []
+        if not isinstance(leaf, str) or leaf not in by_id:
+            leaf = next((entry["id"] for entry in reversed(entries) if isinstance(entry.get("id"), str) and leaf_of(entry) == entry["id"]), None)
+        branch: list[JsonObject] = []
+        visited: set[str] = set()
+        current = by_id.get(leaf) if isinstance(leaf, str) else None
+        while current is not None:
+            entry_id = str(current.get("id"))
+            if entry_id in visited:  # a parent cycle would otherwise loop forever
+                break
+            visited.add(entry_id)
+            branch.append(current)
+            parent = current.get("parentId")
+            current = by_id.get(parent) if isinstance(parent, str) else None
+        branch.reverse()
+        return branch
+
+    @staticmethod
+    def _omp_model_change(record: JsonObject) -> tuple[str | None, str | None]:
+        """Provider and model id from a ``model_change`` entry for the default model. omp writes
+        ``model: "provider/id"``; files that came over from Pi use ``provider`` and ``modelId``.
+        Changes for another role (``smol``, ``plan``, ...) do not change the chat model."""
+        if string_value(record, "role") not in (None, "default"):
+            return None, None
+        model = string_value(record, "model")
+        if model and "/" in model:
+            provider, _, model_id = model.partition("/")
+            return provider or None, model_id or None
+        return string_value(record, "provider"), string_value(record, "modelId") or model
 
     @_shaped
     def from_opencode(self, session: NativeSession) -> list[TextMessage]:
@@ -999,6 +1125,7 @@ class MessageExtractor:
         extractors: dict[str, Callable[[NativeSession], list[TextMessage]]] = {
             "codex": self.from_codex,
             "pi": self.from_pi,
+            "omp": self.from_omp,
             "opencode": self.from_opencode,
             "claude": self.from_claude,
             "devin": self.from_devin,
@@ -1286,6 +1413,159 @@ class PiRecordBuilder:
             return int(datetime.fromisoformat(normalized).timestamp() * 1000)
         except ValueError:
             return int(datetime.now(UTC).timestamp() * 1000)
+
+
+_UNIX_EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
+
+
+def _omp_time(timestamp: str) -> datetime | None:
+    """A source timestamp as an aware UTC datetime, or None when it does not parse. A timestamp
+    without an offset is read as UTC."""
+    if not timestamp:
+        return None
+    try:
+        moment = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=UTC)
+    return moment.astimezone(UTC)
+
+
+def _omp_iso(moment: datetime) -> str:
+    """omp's timestamp format, JavaScript's ``toISOString()``: UTC, milliseconds, ``Z``."""
+    return moment.isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+def _omp_epoch_ms(moment: datetime) -> int:
+    return (moment - _UNIX_EPOCH) // timedelta(milliseconds=1)
+
+
+def _omp_session_timestamp(source: NativeSession) -> str:
+    """The OMP header timestamp for a converted session, which also names its file. Falls back
+    to the source file's modification time, so planning twice yields the same destination."""
+    moment = _omp_time(source.timestamp)
+    if moment is None:
+        try:
+            moment = datetime.fromtimestamp(source.path.stat().st_mtime, UTC)
+        except OSError:
+            moment = datetime.now(UTC)
+    return _omp_iso(moment)
+
+
+class OmpRecordBuilder:
+    """Build an OMP session (see ``OmpStore``) from a TextMessage stream.
+
+    Writes the fixed-width title slot, the ``session`` header, and a ``message`` entry for each
+    user or assistant message, every entry the child of the one before. The title is the first
+    line of the first user message. A compaction summary becomes a ``compaction`` entry that
+    keeps nothing before it, so a resumed session starts from the summary, as after omp's own
+    compactions. Contextual messages are dropped, as in every other builder.
+
+    Assistant entries keep the source provider and model where known and otherwise name the
+    ``session-export/imported`` placeholder; omp falls back to its configured model when the
+    named one is unavailable. Token usage is zero: imported turns carry no usage data, and omp
+    sizes the context from the stored conversation when none is reported.
+
+    With ``source``, a final ``foreign_session_import`` custom entry records where the session
+    came from, the entry omp's own Claude and Codex importers write. omp never sends custom
+    entries to a model. Output is deterministic: the same input builds the same records.
+    """
+
+    def build(
+        self,
+        session_id: str,
+        cwd: str,
+        timestamp: str,
+        messages: list[TextMessage],
+        *,
+        source: NativeSession | None = None,
+    ) -> list[JsonObject]:
+        session_time = _omp_time(timestamp) or datetime.now(UTC)
+        session_iso = _omp_iso(session_time)
+        title = self._title(messages)
+        header: JsonObject = {"type": "session", "version": 3, "id": session_id, "timestamp": session_iso, "cwd": cwd}
+        if title:
+            header["title"] = title
+            header["titleSource"] = "auto"
+        records: list[JsonObject] = [omp_title_slot(title, session_iso, "auto" if title else None), header]
+
+        estimator = TokenEstimator()
+        context_tokens = 0
+        parent_id: str | None = None
+        last_iso = session_iso
+        entry_count = 0
+        for message in messages:
+            if message.is_contextual:
+                continue
+            entry_count += 1
+            entry_id = f"{entry_count:08x}"
+            moment = _omp_time(message.timestamp) or session_time
+            last_iso = _omp_iso(moment)
+            if message.is_compaction:
+                # firstKeptEntryId naming the compaction itself keeps no earlier entry.
+                records.append({
+                    "type": "compaction",
+                    "id": entry_id,
+                    "parentId": parent_id,
+                    "timestamp": last_iso,
+                    "summary": message.text,
+                    "firstKeptEntryId": entry_id,
+                    "tokensBefore": context_tokens,
+                })
+                context_tokens = estimator.count(message.text)
+            else:
+                payload: JsonObject = {"role": "assistant" if message.role == "assistant" else "user", "content": [{"type": "text", "text": message.text}]}
+                if message.role == "assistant":
+                    payload["api"] = message.api or "openai-completions"
+                    payload["provider"] = message.provider or "session-export"
+                    payload["model"] = message.model or "imported"
+                    payload["usage"] = self._zero_usage()
+                    payload["stopReason"] = "stop"
+                else:
+                    payload["attribution"] = "user"
+                payload["timestamp"] = _omp_epoch_ms(moment)
+                records.append({"type": "message", "id": entry_id, "parentId": parent_id, "timestamp": last_iso, "message": payload})
+                context_tokens += estimator.count(message.text)
+            parent_id = entry_id
+
+        if source is not None:
+            records.append({
+                "type": "custom",
+                "id": f"{entry_count + 1:08x}",
+                "parentId": parent_id,
+                "timestamp": last_iso,
+                "customType": "foreign_session_import",
+                "data": {
+                    "source": source.provider,
+                    "sourceId": source.session_id,
+                    "sourcePath": str(source.path),
+                    "sourceCwd": source.cwd,
+                },
+            })
+        return records
+
+    @staticmethod
+    def _title(messages: list[TextMessage]) -> str:
+        for message in messages:
+            if message.role != "user" or message.is_contextual or message.is_compaction:
+                continue
+            for line in message.text.splitlines():
+                words = line.split()
+                if words:
+                    return " ".join(words)[:80]
+        return ""
+
+    @staticmethod
+    def _zero_usage() -> JsonObject:
+        return {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 0,
+            "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "total": 0},
+        }
 
 
 class CodexRecordBuilder:
@@ -4832,21 +5112,23 @@ def _timestamp_or_now(timestamp: str) -> str:
     return datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
-class _T3ConverterBase:
-    """Shared T3-to-X pipeline. T3 is read-only, so every converter here reads T3.
+class _SessionConverterBase:
+    """Shared source-to-target pipeline for converters that read their source through
+    ``MessageExtractor.from_session``, which dispatches on the session's provider. The T3-to-X
+    and OMP-to-X converters are built on it.
 
     Subclasses choose the target store, the record builder, destination naming, and
     how a destination is counted for ``has_changes``.
     """
 
-    def __init__(self, t3_store: T3Store, id_factory: SessionIdFactory) -> None:
-        self._t3_store = t3_store
+    def __init__(self, source_store: SessionStore, id_factory: SessionIdFactory) -> None:
+        self._source_store = source_store
         self._id_factory = id_factory
         self._extractor = MessageExtractor()
         self._builder: _RecordBuilder
 
     def plan(self, session_id: str, *, target_id: str | None = None) -> ConversionPlan:
-        source = self._t3_store.load(session_id)
+        source = self._source_store.load(session_id)
         timestamp = _timestamp_or_now(source.timestamp)
         resolved_id = target_id or self._resolve_id(source.session_id, timestamp)
         records = self._records(resolved_id, source, timestamp)
@@ -4855,18 +5137,18 @@ class _T3ConverterBase:
 
     def has_changes(self, session_id: str) -> bool:
         try:
-            source = self._t3_store.load(session_id)
+            source = self._source_store.load(session_id)
         except FileNotFoundError:
             return True
         timestamp = _timestamp_or_now(source.timestamp)
         resolved_id = self._resolve_id(source.session_id, timestamp)
         destination = self._destination(resolved_id, timestamp, source.cwd)
-        if not destination.exists():
+        if not destination_exists(destination):
             return True
         return self._expected(self._records(resolved_id, source, timestamp)) != self._count(destination)
 
     def _records(self, resolved_id: str, source: NativeSession, timestamp: str) -> list[JsonObject]:
-        return self._builder.build(resolved_id, source.cwd, timestamp, self._extractor.from_t3(source))
+        return self._builder.build(resolved_id, source.cwd, timestamp, self._extractor.from_session(source))
 
     def _expected(self, records: list[JsonObject]) -> int:
         """Record count the destination should hold, in the same unit as ``_count``."""
@@ -4889,9 +5171,9 @@ class _RecordBuilder(Protocol):
     def build(self, session_id: str, cwd: str, timestamp: str, messages: list[TextMessage]) -> list[JsonObject]: ...
 
 
-class T3ToPiConverter(_T3ConverterBase):
-    def __init__(self, t3_store: T3Store, pi_store: PiStore, dcp_store: PiDcpStore, id_factory: SessionIdFactory) -> None:
-        super().__init__(t3_store, id_factory)
+class _ToPiConverter(_SessionConverterBase):
+    def __init__(self, source_store: SessionStore, pi_store: PiStore, dcp_store: PiDcpStore, id_factory: SessionIdFactory) -> None:
+        super().__init__(source_store, id_factory)
         self._pi_store = pi_store
         self._dcp_store = dcp_store
         self._builder = PiRecordBuilder()
@@ -4914,14 +5196,15 @@ class T3ToPiConverter(_T3ConverterBase):
             self._dcp_store.write_default(plan.destination.stem.rsplit("_", 1)[-1], service_path, overwrite=overwrite)
 
 
-class T3ToCodexConverter(_T3ConverterBase):
-    def __init__(self, t3_store: T3Store, codex_store: CodexStore, id_factory: SessionIdFactory) -> None:
-        super().__init__(t3_store, id_factory)
+class _ToCodexConverter(_SessionConverterBase):
+    def __init__(self, source_store: SessionStore, codex_store: CodexStore, id_factory: SessionIdFactory) -> None:
+        super().__init__(source_store, id_factory)
         self._codex_store = codex_store
         self._builder = CodexRecordBuilder()
 
     def _records(self, resolved_id: str, source: NativeSession, timestamp: str) -> list[JsonObject]:
-        return self._builder.build(resolved_id, source.cwd, timestamp, self._extractor.from_t3(source), "t3-import")
+        messages = self._extractor.from_session(source)
+        return self._builder.build(resolved_id, source.cwd, timestamp, messages, f"{source.provider}-import")
 
     def _resolve_id(self, source_id: str, timestamp: str) -> str:
         return self._id_factory.create(stable_session_uuid(source_id))
@@ -4936,9 +5219,9 @@ class T3ToCodexConverter(_T3ConverterBase):
         self._codex_store.write(plan.destination, plan.records, overwrite=overwrite)
 
 
-class T3ToOpenCodeConverter(_T3ConverterBase):
-    def __init__(self, t3_store: T3Store, opencode_store: OpenCodeStore, id_factory: SessionIdFactory) -> None:
-        super().__init__(t3_store, id_factory)
+class _ToOpenCodeConverter(_SessionConverterBase):
+    def __init__(self, source_store: SessionStore, opencode_store: OpenCodeStore, id_factory: SessionIdFactory) -> None:
+        super().__init__(source_store, id_factory)
         self._opencode_store = opencode_store
         self._builder = OpenCodeExportBuilder()
 
@@ -4961,9 +5244,9 @@ class T3ToOpenCodeConverter(_T3ConverterBase):
         self._opencode_store.write(plan.destination, plan.records, overwrite=overwrite)
 
 
-class T3ToClaudeConverter(_T3ConverterBase):
-    def __init__(self, t3_store: T3Store, claude_store: ClaudeStore, id_factory: SessionIdFactory) -> None:
-        super().__init__(t3_store, id_factory)
+class _ToClaudeConverter(_SessionConverterBase):
+    def __init__(self, source_store: SessionStore, claude_store: ClaudeStore, id_factory: SessionIdFactory) -> None:
+        super().__init__(source_store, id_factory)
         self._claude_store = claude_store
         self._builder = ClaudeRecordBuilder()
 
@@ -4980,9 +5263,9 @@ class T3ToClaudeConverter(_T3ConverterBase):
         self._claude_store.write(plan.destination, plan.records, overwrite=overwrite)
 
 
-class T3ToDevinConverter(_T3ConverterBase):
-    def __init__(self, t3_store: T3Store, devin_store: DevinStore, id_factory: SessionIdFactory) -> None:
-        super().__init__(t3_store, id_factory)
+class _ToDevinConverter(_SessionConverterBase):
+    def __init__(self, source_store: SessionStore, devin_store: DevinStore, id_factory: SessionIdFactory) -> None:
+        super().__init__(source_store, id_factory)
         self._devin_store = devin_store
         self._builder = DevinRecordBuilder()
 
@@ -5001,9 +5284,9 @@ class T3ToDevinConverter(_T3ConverterBase):
         self._devin_store.write(plan.destination, plan.records, overwrite=overwrite)
 
 
-class T3ToFactoryConverter(_T3ConverterBase):
-    def __init__(self, t3_store: T3Store, factory_store: FactoryStore, id_factory: SessionIdFactory) -> None:
-        super().__init__(t3_store, id_factory)
+class _ToFactoryConverter(_SessionConverterBase):
+    def __init__(self, source_store: SessionStore, factory_store: FactoryStore, id_factory: SessionIdFactory) -> None:
+        super().__init__(source_store, id_factory)
         self._factory_store = factory_store
         self._builder = FactoryRecordBuilder()
 
@@ -5020,9 +5303,9 @@ class T3ToFactoryConverter(_T3ConverterBase):
         self._factory_store.write(plan.destination, plan.records, overwrite=overwrite)
 
 
-class T3ToWindsurfConverter(_T3ConverterBase):
-    def __init__(self, t3_store: T3Store, windsurf_store: WindsurfStore, id_factory: SessionIdFactory) -> None:
-        super().__init__(t3_store, id_factory)
+class _ToWindsurfConverter(_SessionConverterBase):
+    def __init__(self, source_store: SessionStore, windsurf_store: WindsurfStore, id_factory: SessionIdFactory) -> None:
+        super().__init__(source_store, id_factory)
         self._windsurf_store = windsurf_store
         self._builder = WindsurfRecordBuilder()
 
@@ -5041,9 +5324,9 @@ class T3ToWindsurfConverter(_T3ConverterBase):
         self._windsurf_store.write(plan.destination, plan.records, overwrite=overwrite)
 
 
-class T3ToGrokConverter(_T3ConverterBase):
-    def __init__(self, t3_store: T3Store, grok_store: GrokStore, id_factory: SessionIdFactory) -> None:
-        super().__init__(t3_store, id_factory)
+class _ToGrokConverter(_SessionConverterBase):
+    def __init__(self, source_store: SessionStore, grok_store: GrokStore, id_factory: SessionIdFactory) -> None:
+        super().__init__(source_store, id_factory)
         self._grok_store = grok_store
         self._builder = GrokRecordBuilder()
 
@@ -5054,18 +5337,19 @@ class T3ToGrokConverter(_T3ConverterBase):
         return self._grok_store.destination_path(resolved_id, cwd)
 
     def _expected(self, records: list[JsonObject]) -> int:
-        return sum(1 for record in records if "_summary" not in record)
+        # The _session header is a sessions row, not a message row.
+        return sum(1 for record in records if "_session" not in record and "_summary" not in record)
 
     def _count(self, destination: Path) -> int:
-        return _count_grok_records(destination)
+        return grok_db_message_count(destination.parent, destination.name)
 
     def write(self, plan: ConversionPlan, *, overwrite: bool = False) -> None:
         self._grok_store.write(plan.destination, plan.records, overwrite=overwrite)
 
 
-class T3ToFreebuffConverter(_T3ConverterBase):
-    def __init__(self, t3_store: T3Store, freebuff_store: FreebuffStore, id_factory: SessionIdFactory) -> None:
-        super().__init__(t3_store, id_factory)
+class _ToFreebuffConverter(_SessionConverterBase):
+    def __init__(self, source_store: SessionStore, freebuff_store: FreebuffStore, id_factory: SessionIdFactory) -> None:
+        super().__init__(source_store, id_factory)
         self._freebuff_store = freebuff_store
         self._builder = FreebuffRecordBuilder()
 
@@ -5077,11 +5361,134 @@ class T3ToFreebuffConverter(_T3ConverterBase):
 
     def _count(self, destination: Path) -> int:
         # The count covers every thread in the shared project database, not just this one,
-        # so it cannot be compared with one T3 thread. -1 keeps has_changes conservative.
+        # so it cannot be compared with one source session. -1 keeps has_changes conservative.
         return -1
 
     def write(self, plan: ConversionPlan, *, overwrite: bool = False) -> None:
         self._freebuff_store.write(plan.destination, plan.records, overwrite=overwrite)
+
+
+class T3ToPiConverter(_ToPiConverter):
+    """T3 Code thread to Pi session."""
+
+
+class T3ToCodexConverter(_ToCodexConverter):
+    """T3 Code thread to Codex rollout."""
+
+
+class T3ToOpenCodeConverter(_ToOpenCodeConverter):
+    """T3 Code thread to OpenCode export."""
+
+
+class T3ToClaudeConverter(_ToClaudeConverter):
+    """T3 Code thread to Claude Code transcript."""
+
+
+class T3ToDevinConverter(_ToDevinConverter):
+    """T3 Code thread to Devin transcript."""
+
+
+class T3ToFactoryConverter(_ToFactoryConverter):
+    """T3 Code thread to Factory transcript."""
+
+
+class T3ToWindsurfConverter(_ToWindsurfConverter):
+    """T3 Code thread to Windsurf Cascade trajectory."""
+
+
+class T3ToGrokConverter(_ToGrokConverter):
+    """T3 Code thread to Grok Build session."""
+
+
+class T3ToFreebuffConverter(_ToFreebuffConverter):
+    """T3 Code thread to Freebuff Desktop thread."""
+
+
+class OmpToPiConverter(_ToPiConverter):
+    """OMP session (active branch) to Pi session."""
+
+
+class OmpToCodexConverter(_ToCodexConverter):
+    """OMP session (active branch) to Codex rollout."""
+
+
+class OmpToOpenCodeConverter(_ToOpenCodeConverter):
+    """OMP session (active branch) to OpenCode export."""
+
+
+class OmpToClaudeConverter(_ToClaudeConverter):
+    """OMP session (active branch) to Claude Code transcript."""
+
+
+class OmpToDevinConverter(_ToDevinConverter):
+    """OMP session (active branch) to Devin transcript."""
+
+
+class OmpToFactoryConverter(_ToFactoryConverter):
+    """OMP session (active branch) to Factory transcript."""
+
+
+class OmpToWindsurfConverter(_ToWindsurfConverter):
+    """OMP session (active branch) to Windsurf Cascade trajectory."""
+
+
+class OmpToGrokConverter(_ToGrokConverter):
+    """OMP session (active branch) to Grok Build session."""
+
+
+class OmpToFreebuffConverter(_ToFreebuffConverter):
+    """OMP session (active branch) to Freebuff Desktop thread."""
+
+
+class ToOmpConverter:
+    """Write a session from any store as an OMP session.
+
+    The source is read through ``MessageExtractor.from_session`` and built by
+    ``OmpRecordBuilder`` into the bucket omp uses for the session's cwd, so ``omp --resume``
+    lists it from that folder. A source without a cwd goes to the home folder's bucket. A source
+    id that is not a UUID maps to a stable UUID, which keeps it out of omp's
+    ``<timestamp>_<id>.jsonl`` file names.
+
+    omp resumes a session on the model its last reply names, and outside the interactive UI it
+    refuses to resume when that model is unavailable. Claude Code records the model but not
+    the provider, which is always Anthropic, so Claude replies are written as
+    ``anthropic/<model>``, as omp's own Claude importer does.
+    """
+
+    def __init__(self, source_store: SessionStore, omp_store: OmpStore, id_factory: SessionIdFactory) -> None:
+        self._source_store = source_store
+        self._omp_store = omp_store
+        self._id_factory = id_factory
+        self._extractor = MessageExtractor()
+        self._builder = OmpRecordBuilder()
+
+    def plan(self, session_id: str, *, target_id: str | None = None) -> ConversionPlan:
+        source = self._source_store.load(session_id)
+        timestamp = _omp_session_timestamp(source)
+        resolved_id = target_id or self._id_factory.create(stable_session_uuid(source.session_id))
+        cwd = source.cwd or str(Path.home())
+        messages = self._extractor.from_session(source)
+        if source.provider == "claude":
+            messages = [
+                replace(message, provider="anthropic", api=message.api or "anthropic-messages")
+                if message.role == "assistant" and message.provider is None
+                else message
+                for message in messages
+            ]
+        records = self._builder.build(resolved_id, cwd, timestamp, messages, source=source)
+        return ConversionPlan(source, self._omp_store.destination_path(resolved_id, timestamp, cwd), records)
+
+    def has_changes(self, session_id: str) -> bool:
+        try:
+            plan = self.plan(session_id)
+        except FileNotFoundError:
+            return True
+        if not plan.destination.exists():
+            return True
+        return len(plan.records) != _count_jsonl_records(plan.destination)
+
+    def write(self, plan: ConversionPlan, *, overwrite: bool = False) -> None:
+        self._omp_store.write(plan.destination, plan.records, overwrite=overwrite)
 
 
 class T3RecordBuilder:

@@ -15,9 +15,9 @@ except ImportError:
     _HAS_ORJSON = False
 
 from session_sdk.json_types import JsonObject, as_list, as_object, as_str, string_value
-from session_sdk.jsonl import JsonlFile
+from session_sdk.jsonl import JsonlFile, _dumps
 from session_sdk.models import NativeSession, SessionSummary
-from session_sdk.paths import codex_date_parts, codex_filename_timestamp, decode_grok_cwd_dirname, encode_grok_cwd_dirname, encode_pi_cwd, epoch_ms_to_iso, pi_filename_timestamp, sanitize_claude_cwd
+from session_sdk.paths import codex_date_parts, codex_filename_timestamp, decode_grok_cwd_dirname, encode_grok_cwd_dirname, encode_omp_cwd, encode_pi_cwd, epoch_ms_to_iso, pi_filename_timestamp, sanitize_claude_cwd
 
 import sqlite3 as _sqlite3
 
@@ -430,6 +430,204 @@ class PiStore(SessionStore):
     @staticmethod
     def _message_count(records: list[JsonObject]) -> int:
         return sum(1 for record in records if record.get("type") == "message")
+
+
+OMP_TITLE_SLOT_BYTES = 256
+
+
+def omp_title_slot(title: str, updated_at: str, source: str | None = "auto") -> JsonObject:
+    """OMP's first line: a ``title`` record padded with spaces to exactly 256 bytes including its
+    newline, so omp can rewrite the title in place. Same layout and key order as
+    ``serializeTitleSlot`` in omp's session-title-slot.ts; a title too long for the slot is cut
+    at the last code point that fits."""
+
+    def slot(text: str, pad: str) -> JsonObject:
+        record: JsonObject = {"type": "title", "v": 1, "title": text}
+        if source:
+            record["source"] = source
+        record["updatedAt"] = updated_at
+        record["pad"] = pad
+        return record
+
+    def line_bytes(record: JsonObject) -> int:
+        return len(_dumps(record)) + 1
+
+    low, high, kept = 0, len(title), ""
+    while low <= high:
+        middle = (low + high) // 2
+        if line_bytes(slot(title[:middle], "")) <= OMP_TITLE_SLOT_BYTES:
+            kept = title[:middle]
+            low = middle + 1
+        else:
+            high = middle - 1
+    padding = OMP_TITLE_SLOT_BYTES - line_bytes(slot(kept, ""))
+    if padding < 0:
+        raise ValueError("OMP title slot metadata does not fit in the fixed-width slot")
+    return slot(kept, " " * padding)
+
+
+class OmpStore(SessionStore):
+    """Filesystem store for OMP (oh-my-pi) sessions.
+
+    OMP keeps one JSONL file per session at ``sessions/<bucket>/<timestamp>_<id>.jsonl``, where
+    the bucket encodes the session cwd (see ``encode_omp_cwd``). Line one is a fixed-width
+    ``title`` slot that omp rewrites in place, line two the ``session`` header, and every later
+    line an entry linked to its parent by ``parentId``. Files in deeper folders hold subagent
+    transcripts and are not sessions of their own, so listing skips them, as omp does.
+    """
+
+    provider_name = "omp"
+
+    def __init__(self, omp_agent_home: Path, session_dir: Path | None = None) -> None:
+        self._omp_agent_home = omp_agent_home
+        self._session_dir = session_dir
+        self._path_cache: list[Path] | None = None
+        self._id_index: dict[str, Path] | None = None
+
+    @property
+    def root(self) -> Path:
+        return self._omp_agent_home
+
+    def list(self, *, workers: int = 1) -> list[SessionSummary]:
+        paths = self._session_paths()
+        if workers <= 1 or len(paths) <= 1:
+            return [s for path in paths if (s := self._cached(self._safe_summary, path)) is not None]
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=min(workers, len(paths)), thread_name_prefix="omp-list") as executor:
+            results = list(executor.map(lambda p: self._cached(self._safe_summary, p), paths))
+        return [s for s in results if s is not None]
+
+    def list_metadata(self, *, workers: int = 1) -> list[SessionSummary]:
+        paths = self._session_paths()
+        if workers <= 1 or len(paths) <= 1:
+            return [s for path in paths if (s := self._cached(self._safe_metadata, path)) is not None]
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=min(workers, len(paths)), thread_name_prefix="omp-meta") as executor:
+            results = list(executor.map(lambda p: self._cached(self._safe_metadata, p), paths))
+        return [s for s in results if s is not None]
+
+    def load(self, session_id: str) -> NativeSession:
+        path = self._find_path(session_id)
+        if path is not None:
+            return self._load_file(path)
+        raise FileNotFoundError(f"OMP session not found: {session_id}")
+
+    def load_path(self, path: Path) -> NativeSession:
+        return self._load_file(path)
+
+    def _find_path(self, session_id: str) -> Path | None:
+        index = self._id_index_cache()
+        if session_id in index:
+            return index[session_id]
+        # A unique prefix of the id also loads the session, as Pi's --session does. An ambiguous
+        # prefix matches nothing rather than an arbitrary session.
+        matches = [path for sid, path in index.items() if sid.startswith(session_id)]
+        return matches[0] if len(matches) == 1 else None
+
+    def destination_path(self, session_id: str, timestamp: str, cwd: str) -> Path:
+        filename = f"{pi_filename_timestamp(timestamp)}_{session_id}.jsonl"
+        return self._active_session_root() / encode_omp_cwd(cwd) / filename
+
+    def write(self, path: Path, records: list[JsonObject], *, overwrite: bool = False) -> None:
+        if records and records[0].get("type") == "title" and len(_dumps(records[0])) + 1 != OMP_TITLE_SLOT_BYTES:
+            raise ValueError(f"OMP title slot must be exactly {OMP_TITLE_SLOT_BYTES} bytes; build it with omp_title_slot()")
+        JsonlFile(path).write(records, overwrite=overwrite)
+
+    def _session_paths(self) -> list[Path]:
+        if self._path_cache is not None:
+            return self._path_cache
+        root = self._active_session_root()
+        if not root.exists():
+            self._path_cache = []
+            return []
+        paths = sorted(path for path in root.glob("*/*.jsonl") if path.is_file())
+        self._path_cache = paths
+        return paths
+
+    def _id_index_cache(self) -> dict[str, Path]:
+        if self._id_index is not None:
+            return self._id_index
+        index: dict[str, Path] = {}
+        for path in self._session_paths():
+            stem = path.stem
+            if "_" in stem:
+                sid = stem.rsplit("_", 1)[-1]
+                if sid:
+                    index[sid] = path
+        self._id_index = index
+        return index
+
+    def _active_session_root(self) -> Path:
+        return self._session_dir or (self._omp_agent_home / "sessions")
+
+    def _load_file(self, path: Path) -> NativeSession:
+        records = self._logical_records(JsonlFile(path).read())
+        header = records[0] if records and records[0].get("type") == "session" else {}
+        session_id = string_value(header, "id") or path.stem.rsplit("_", 1)[-1]
+        cwd = string_value(header, "cwd") or ""
+        timestamp = string_value(header, "timestamp") or ""
+        return NativeSession("omp", session_id, cwd, timestamp, path, records)
+
+    @staticmethod
+    def _logical_records(records: list[JsonObject]) -> list[JsonObject]:
+        """Drop the title slot and fold its title into the header, as omp's loader does. The slot
+        is the current title: omp rewrites it in place and leaves the header line as written."""
+        if not records or records[0].get("type") != "title":
+            return records
+        slot, rest = records[0], records[1:]
+        title = slot.get("title")
+        if rest and rest[0].get("type") == "session" and isinstance(title, str) and title:
+            header = dict(rest[0])
+            header["title"] = title
+            source = slot.get("source")
+            if source in ("auto", "user"):
+                header["titleSource"] = source
+            rest = [header, *rest[1:]]
+        return rest
+
+    def _safe_summary(self, path: Path) -> SessionSummary | None:
+        try:
+            metadata = self._safe_metadata(path)
+            if metadata is None:
+                return None
+            message_count = 0
+            with path.open("rb") as handle:
+                for line in handle:
+                    stripped = line.strip()
+                    if not stripped:
+                        continue
+                    value = _json_loads(stripped)
+                    if isinstance(value, dict) and value.get("type") == "message":
+                        message_count += 1
+            return SessionSummary("omp", metadata.session_id, metadata.cwd, metadata.timestamp, path, message_count)
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            print(f"warning: skipped unreadable OMP session {path}: {exc}", file=sys.stderr)
+            return None
+
+    def _safe_metadata(self, path: Path) -> SessionSummary | None:
+        """Summary from the header alone (``message_count`` -1). The header is the first line,
+        or the second when the file starts with a title slot."""
+        try:
+            with path.open("rb") as handle:
+                seen = 0
+                for line in handle:
+                    stripped = line.strip()
+                    if not stripped:
+                        continue
+                    value = _json_loads(stripped)
+                    seen += 1
+                    if seen == 1 and isinstance(value, dict) and value.get("type") == "title":
+                        continue
+                    if not isinstance(value, dict) or value.get("type") != "session":
+                        return None
+                    session_id = string_value(value, "id") or path.stem.rsplit("_", 1)[-1]
+                    cwd = string_value(value, "cwd") or ""
+                    timestamp = string_value(value, "timestamp") or ""
+                    return SessionSummary("omp", session_id, cwd, timestamp, path, -1)
+            return None
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            print(f"warning: skipped unreadable OMP session {path}: {exc}", file=sys.stderr)
+            return None
 
 
 class ClaudeStore(SessionStore):
@@ -2427,6 +2625,18 @@ def grok_db_has_session(database: Path, session_id: str) -> bool:
     connection = _sqlite3.connect(database.resolve().as_uri() + "?mode=ro", uri=True)
     try:
         return connection.execute("SELECT 1 FROM sessions WHERE id = ?", (session_id,)).fetchone() is not None
+    finally:
+        connection.close()
+
+
+def grok_db_message_count(database: Path, session_id: str) -> int:
+    """Rows in ``messages`` for one session, or -1 when the database or the session is missing."""
+    if not database.is_file():
+        return -1
+    connection = _sqlite3.connect(database.resolve().as_uri() + "?mode=ro", uri=True)
+    try:
+        row = connection.execute("SELECT COUNT(*) FROM messages WHERE session_id = ?", (session_id,)).fetchone()
+        return int(row[0]) if row is not None else -1
     finally:
         connection.close()
 

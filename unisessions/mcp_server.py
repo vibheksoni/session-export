@@ -9,7 +9,7 @@ from fastmcp import FastMCP
 
 from session_sdk.paths import WindowsDefaults
 from session_sdk.search import CwdMatch, MatchMode, Provider, SessionSearchEngine, StalePolicy
-from session_sdk.stores import ClaudeStore, CodexStore, DevinStore, FactoryStore, FreebuffStore, GrokStore, OpenCodeStore, PiStore, T3Store, WindsurfStore
+from session_sdk.stores import ClaudeStore, CodexStore, DevinStore, FactoryStore, FreebuffStore, GrokStore, OmpStore, OpenCodeStore, PiStore, T3Store, WindsurfStore
 
 Transport = Literal["stdio", "http", "sse", "streamable-http"]
 
@@ -39,6 +39,7 @@ def _engine() -> SessionSearchEngine:
         GrokStore(defaults.grok_home),
         FreebuffStore(defaults.freebuff_home),
         T3Store(defaults.t3_home),
+        OmpStore(defaults.omp_agent_home),
     )
 
 

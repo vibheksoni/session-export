@@ -39,6 +39,15 @@ from session_sdk.converters import (
     FactoryToFreebuffConverter,
     FactoryToGrokConverter,
     FactoryToWindsurfConverter,
+    OmpToClaudeConverter,
+    OmpToCodexConverter,
+    OmpToDevinConverter,
+    OmpToFactoryConverter,
+    OmpToFreebuffConverter,
+    OmpToGrokConverter,
+    OmpToOpenCodeConverter,
+    OmpToPiConverter,
+    OmpToWindsurfConverter,
     OpenCodeToClaudeConverter,
     OpenCodeToCodexConverter,
     OpenCodeToDevinConverter,
@@ -79,6 +88,7 @@ from session_sdk.converters import (
     T3ToOpenCodeConverter,
     T3ToPiConverter,
     T3ToWindsurfConverter,
+    ToOmpConverter,
     ToT3Converter,
     WindsurfToClaudeConverter,
     WindsurfToCodexConverter,
@@ -91,7 +101,7 @@ from session_sdk.converters import (
 )
 from session_sdk.models import ConversionPlan, SessionSummary
 from session_sdk.paths import SessionIdFactory, WindowsDefaults
-from session_sdk.stores import T3_PROVIDER_DRIVERS, T3WriteError, destination_exists, ClaudeStore, CodexStore, DevinStore, FactoryStore, FreebuffStore, GrokStore, OpenCodeStore, PiDcpStore, PiStore, T3Store, WindsurfStore
+from session_sdk.stores import T3_PROVIDER_DRIVERS, T3WriteError, destination_exists, ClaudeStore, CodexStore, DevinStore, FactoryStore, FreebuffStore, GrokStore, OmpStore, OpenCodeStore, PiDcpStore, PiStore, T3Store, WindsurfStore
 from session_sdk.options import ConversionOptions, conversion_options
 from session_sdk.traces import TRACE_FORMATS, build_trace
 from session_sdk.converters import MessageExtractor
@@ -156,15 +166,19 @@ class CliApp:
             self._optional_path(args.freebuff_session_dir),
         )
         t3 = T3Store(Path(args.t3_home or defaults.t3_home))
+        omp = OmpStore(
+            Path(args.omp_agent_home or defaults.omp_agent_home),
+            self._optional_path(args.omp_session_dir),
+        )
 
         if args.command == "list":
-            store = {"codex": codex, "pi": pi, "opencode": opencode, "claude": claude, "devin": devin, "factory": factory, "windsurf": windsurf, "grok": grok, "freebuff": freebuff, "t3": t3}[args.provider]
+            store = {"codex": codex, "pi": pi, "opencode": opencode, "claude": claude, "devin": devin, "factory": factory, "windsurf": windsurf, "grok": grok, "freebuff": freebuff, "t3": t3, "omp": omp}[args.provider]
             summaries = store.list(workers=args.workers or 1)
             self._print_summaries(summaries)
             return 0
 
         if args.command == "to-trace":
-            return self._to_trace(args, codex, pi, opencode, claude, devin, factory, windsurf, grok, freebuff, t3)
+            return self._to_trace(args, codex, pi, opencode, claude, devin, factory, windsurf, grok, freebuff, t3, omp)
 
         id_factory = SessionIdFactory(preserve_ids=not args.new_id)
         if args.command in ("codex-to-pi", "pi-to-codex", "codex-to-opencode",
@@ -193,14 +207,16 @@ class CliApp:
                             "claude-to-freebuff", "devin-to-freebuff", "factory-to-freebuff",
                             "windsurf-to-freebuff", "grok-to-freebuff",
                             "codex-to-t3", "pi-to-t3", "opencode-to-t3", "claude-to-t3", "devin-to-t3", "factory-to-t3", "windsurf-to-t3", "grok-to-t3", "freebuff-to-t3",
-                            "t3-to-pi", "t3-to-codex", "t3-to-opencode", "t3-to-claude", "t3-to-devin", "t3-to-factory", "t3-to-windsurf", "t3-to-grok", "t3-to-freebuff"):
-            return self._single_convert(args, codex, pi, dcp, opencode, claude, devin, factory, windsurf, grok, freebuff, t3, id_factory)
+                            "t3-to-pi", "t3-to-codex", "t3-to-opencode", "t3-to-claude", "t3-to-devin", "t3-to-factory", "t3-to-windsurf", "t3-to-grok", "t3-to-freebuff",
+                            "omp-to-pi", "omp-to-codex", "omp-to-opencode", "omp-to-claude", "omp-to-devin", "omp-to-factory", "omp-to-windsurf", "omp-to-grok", "omp-to-freebuff", "omp-to-t3",
+                            "pi-to-omp", "codex-to-omp", "opencode-to-omp", "claude-to-omp", "devin-to-omp", "factory-to-omp", "windsurf-to-omp", "grok-to-omp", "freebuff-to-omp", "t3-to-omp"):
+            return self._single_convert(args, codex, pi, dcp, opencode, claude, devin, factory, windsurf, grok, freebuff, t3, omp, id_factory)
 
         if args.command == "codex-to-pi-all":
-            return self._bulk_export({"codex": codex, "pi": pi, "pi-dcp": dcp, "opencode": opencode, "claude": claude, "devin": devin, "factory": factory, "windsurf": windsurf, "grok": grok, "freebuff": freebuff}, id_factory, args, targets=["pi"])
+            return self._bulk_export({"codex": codex, "pi": pi, "pi-dcp": dcp, "opencode": opencode, "claude": claude, "devin": devin, "factory": factory, "windsurf": windsurf, "grok": grok, "freebuff": freebuff, "omp": omp}, id_factory, args, targets=["pi"])
 
         if args.command == "export-all":
-            return self._bulk_export({"codex": codex, "pi": pi, "pi-dcp": dcp, "opencode": opencode, "claude": claude, "devin": devin, "factory": factory, "windsurf": windsurf, "grok": grok, "freebuff": freebuff}, id_factory, args, targets=args.targets)
+            return self._bulk_export({"codex": codex, "pi": pi, "pi-dcp": dcp, "opencode": opencode, "claude": claude, "devin": devin, "factory": factory, "windsurf": windsurf, "grok": grok, "freebuff": freebuff, "omp": omp}, id_factory, args, targets=args.targets)
 
         raise ValueError(f"Unsupported command: {args.command}")
 
@@ -227,10 +243,12 @@ class CliApp:
         parser.add_argument("--freebuff-home", default=None)
         parser.add_argument("--freebuff-session-dir", default=None)
         parser.add_argument("--t3-home", default=None, help="T3 Code home (default: T3CODE_HOME or ~/.t3). Threads are read from <home>/userdata, read-only.")
+        parser.add_argument("--omp-agent-home", default=None, help="OMP agent directory holding sessions/ (default: resolved like omp, usually ~/.omp/agent).")
+        parser.add_argument("--omp-session-dir", default=None, help="OMP sessions root holding the per-project folders (default: <omp agent home>/sessions).")
         subparsers = parser.add_subparsers(dest="command", required=True)
 
         list_parser = subparsers.add_parser("list")
-        list_parser.add_argument("provider", choices=("codex", "pi", "opencode", "claude", "devin", "factory", "windsurf", "grok", "freebuff", "t3"))
+        list_parser.add_argument("provider", choices=("codex", "pi", "opencode", "claude", "devin", "factory", "windsurf", "grok", "freebuff", "t3", "omp"))
         list_parser.add_argument("--workers", type=int, default=None, help="Number of parallel workers for listing (default: 1).")
 
         codex_to_pi = subparsers.add_parser("codex-to-pi")
@@ -512,15 +530,76 @@ class CliApp:
         CliApp._add_convert_args(freebuff_to_t3)
         CliApp._add_t3_target_args(freebuff_to_t3)
 
+        omp_to_pi = subparsers.add_parser("omp-to-pi")
+        CliApp._add_convert_args(omp_to_pi)
+
+        omp_to_codex = subparsers.add_parser("omp-to-codex")
+        CliApp._add_convert_args(omp_to_codex)
+
+        omp_to_opencode = subparsers.add_parser("omp-to-opencode")
+        CliApp._add_convert_args(omp_to_opencode)
+
+        omp_to_claude = subparsers.add_parser("omp-to-claude")
+        CliApp._add_convert_args(omp_to_claude)
+
+        omp_to_devin = subparsers.add_parser("omp-to-devin")
+        CliApp._add_convert_args(omp_to_devin)
+
+        omp_to_factory = subparsers.add_parser("omp-to-factory")
+        CliApp._add_convert_args(omp_to_factory)
+
+        omp_to_windsurf = subparsers.add_parser("omp-to-windsurf")
+        CliApp._add_convert_args(omp_to_windsurf)
+
+        omp_to_grok = subparsers.add_parser("omp-to-grok")
+        CliApp._add_convert_args(omp_to_grok)
+
+        omp_to_freebuff = subparsers.add_parser("omp-to-freebuff")
+        CliApp._add_convert_args(omp_to_freebuff)
+
+        omp_to_t3 = subparsers.add_parser("omp-to-t3")
+        CliApp._add_convert_args(omp_to_t3)
+        CliApp._add_t3_target_args(omp_to_t3)
+
+        pi_to_omp = subparsers.add_parser("pi-to-omp")
+        CliApp._add_convert_args(pi_to_omp)
+
+        codex_to_omp = subparsers.add_parser("codex-to-omp")
+        CliApp._add_convert_args(codex_to_omp)
+
+        opencode_to_omp = subparsers.add_parser("opencode-to-omp")
+        CliApp._add_convert_args(opencode_to_omp)
+
+        claude_to_omp = subparsers.add_parser("claude-to-omp")
+        CliApp._add_convert_args(claude_to_omp)
+
+        devin_to_omp = subparsers.add_parser("devin-to-omp")
+        CliApp._add_convert_args(devin_to_omp)
+
+        factory_to_omp = subparsers.add_parser("factory-to-omp")
+        CliApp._add_convert_args(factory_to_omp)
+
+        windsurf_to_omp = subparsers.add_parser("windsurf-to-omp")
+        CliApp._add_convert_args(windsurf_to_omp)
+
+        grok_to_omp = subparsers.add_parser("grok-to-omp")
+        CliApp._add_convert_args(grok_to_omp)
+
+        freebuff_to_omp = subparsers.add_parser("freebuff-to-omp")
+        CliApp._add_convert_args(freebuff_to_omp)
+
+        t3_to_omp = subparsers.add_parser("t3-to-omp")
+        CliApp._add_convert_args(t3_to_omp)
+
         codex_to_pi_all = subparsers.add_parser("codex-to-pi-all")
         CliApp._add_bulk_args(codex_to_pi_all)
 
         export_all = subparsers.add_parser("export-all")
         CliApp._add_bulk_args(export_all)
-        export_all.add_argument("--targets", nargs="+", default=["pi"], choices=("pi", "opencode", "claude", "devin", "factory", "windsurf", "grok", "freebuff"))
+        export_all.add_argument("--targets", nargs="+", default=["pi"], choices=("pi", "opencode", "claude", "devin", "factory", "windsurf", "grok", "freebuff", "omp"))
 
         to_trace = subparsers.add_parser("to-trace")
-        to_trace.add_argument("provider", choices=("codex", "pi", "opencode", "claude", "devin", "factory", "windsurf", "grok", "freebuff", "t3"))
+        to_trace.add_argument("provider", choices=("codex", "pi", "opencode", "claude", "devin", "factory", "windsurf", "grok", "freebuff", "t3", "omp"))
         to_trace.add_argument("session_id")
         to_trace.add_argument("--no-thinking", action="store_true", help="Leave reasoning out of the output (default: carried over).")
         to_trace.add_argument("--no-tool-calls", action="store_true", help="Leave tool calls and their outputs out of the output (default: carried over).")
@@ -562,6 +641,7 @@ class CliApp:
             "windsurf": CodexToWindsurfConverter,
             "grok": CodexToGrokConverter,
             "freebuff": CodexToFreebuffConverter,
+            "omp": ToOmpConverter,
         }
         return builders[target](codex, stores[target], id_factory)  # type: ignore[call-arg, arg-type]
 
@@ -658,6 +738,7 @@ class CliApp:
         grok: GrokStore,
         freebuff: FreebuffStore,
         t3: T3Store,
+        omp: OmpStore,
         id_factory: SessionIdFactory,
     ) -> int:
         converters = {
@@ -751,6 +832,26 @@ class CliApp:
             "windsurf-to-t3": lambda: ToT3Converter(windsurf, t3, id_factory, args.t3_provider),
             "grok-to-t3": lambda: ToT3Converter(grok, t3, id_factory, args.t3_provider),
             "freebuff-to-t3": lambda: ToT3Converter(freebuff, t3, id_factory, args.t3_provider),
+            "omp-to-pi": lambda: OmpToPiConverter(omp, pi, dcp, id_factory),
+            "omp-to-codex": lambda: OmpToCodexConverter(omp, codex, id_factory),
+            "omp-to-opencode": lambda: OmpToOpenCodeConverter(omp, opencode, id_factory),
+            "omp-to-claude": lambda: OmpToClaudeConverter(omp, claude, id_factory),
+            "omp-to-devin": lambda: OmpToDevinConverter(omp, devin, id_factory),
+            "omp-to-factory": lambda: OmpToFactoryConverter(omp, factory, id_factory),
+            "omp-to-windsurf": lambda: OmpToWindsurfConverter(omp, windsurf, id_factory),
+            "omp-to-grok": lambda: OmpToGrokConverter(omp, grok, id_factory),
+            "omp-to-freebuff": lambda: OmpToFreebuffConverter(omp, freebuff, id_factory),
+            "omp-to-t3": lambda: ToT3Converter(omp, t3, id_factory, args.t3_provider),
+            "pi-to-omp": lambda: ToOmpConverter(pi, omp, id_factory),
+            "codex-to-omp": lambda: ToOmpConverter(codex, omp, id_factory),
+            "opencode-to-omp": lambda: ToOmpConverter(opencode, omp, id_factory),
+            "claude-to-omp": lambda: ToOmpConverter(claude, omp, id_factory),
+            "devin-to-omp": lambda: ToOmpConverter(devin, omp, id_factory),
+            "factory-to-omp": lambda: ToOmpConverter(factory, omp, id_factory),
+            "windsurf-to-omp": lambda: ToOmpConverter(windsurf, omp, id_factory),
+            "grok-to-omp": lambda: ToOmpConverter(grok, omp, id_factory),
+            "freebuff-to-omp": lambda: ToOmpConverter(freebuff, omp, id_factory),
+            "t3-to-omp": lambda: ToOmpConverter(t3, omp, id_factory),
         }
         converter = converters[args.command]()
         sid = args.session_id
@@ -802,8 +903,9 @@ class CliApp:
         grok: GrokStore,
         freebuff: FreebuffStore,
         t3: T3Store,
+        omp: OmpStore,
     ) -> int:
-        stores = {"codex": codex, "pi": pi, "opencode": opencode, "claude": claude, "devin": devin, "factory": factory, "windsurf": windsurf, "grok": grok, "freebuff": freebuff, "t3": t3}
+        stores = {"codex": codex, "pi": pi, "opencode": opencode, "claude": claude, "devin": devin, "factory": factory, "windsurf": windsurf, "grok": grok, "freebuff": freebuff, "t3": t3, "omp": omp}
         store = stores[args.provider]
         session = store.load(args.session_id)
         extractor = MessageExtractor()
@@ -818,6 +920,7 @@ class CliApp:
             "grok": extractor.from_grok,
             "freebuff": extractor.from_freebuff,
             "t3": extractor.from_t3,
+            "omp": extractor.from_omp,
         }
         messages = extractors[args.provider](session)
         records = build_trace(args.format, session, messages)

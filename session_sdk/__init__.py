@@ -52,6 +52,16 @@ from session_sdk.converters import (
     OpenCodeToCodexConverter,
     OpenCodeToDevinConverter,
     OpenCodeToFactoryConverter,
+    OmpRecordBuilder,
+    OmpToClaudeConverter,
+    OmpToCodexConverter,
+    OmpToDevinConverter,
+    OmpToFactoryConverter,
+    OmpToFreebuffConverter,
+    OmpToGrokConverter,
+    OmpToOpenCodeConverter,
+    OmpToPiConverter,
+    OmpToWindsurfConverter,
     OpenCodeToFreebuffConverter,
     OpenCodeToGrokConverter,
     OpenCodeToPiConverter,
@@ -74,6 +84,7 @@ from session_sdk.converters import (
     T3ToOpenCodeConverter,
     T3ToPiConverter,
     T3ToWindsurfConverter,
+    ToOmpConverter,
     ToT3Converter,
     WindsurfToClaudeConverter,
     WindsurfToCodexConverter,
@@ -87,9 +98,9 @@ from session_sdk.converters import (
 from session_sdk.jsonl import JsonlFile
 from session_sdk.models import ConversionPlan, NativeSession, SessionSummary, TextMessage
 from session_sdk.options import ConversionOptions, conversion_options
-from session_sdk.paths import SessionIdFactory, WindowsDefaults, encode_pi_cwd
+from session_sdk.paths import SessionIdFactory, WindowsDefaults, encode_omp_cwd, encode_pi_cwd
 from session_sdk.search import ChatSearchResult, SearchResponse, SessionSearchEngine, SessionSearchIndex, SessionSearchResult, StalePolicy
-from session_sdk.stores import T3_PROVIDER_DRIVERS, ClaudeStore, CodexStore, DevinStore, FactoryStore, FreebuffStore, GrokStore, OpenCodeStore, PiDcpStore, PiStore, T3Store, T3WriteError, WindsurfStore
+from session_sdk.stores import T3_PROVIDER_DRIVERS, ClaudeStore, CodexStore, DevinStore, FactoryStore, FreebuffStore, GrokStore, OmpStore, OpenCodeStore, PiDcpStore, PiStore, T3Store, T3WriteError, WindsurfStore, omp_title_slot
 from session_sdk.traces import (
     OpenAITraceBuilder,
     ShareGPTTraceBuilder,
@@ -142,6 +153,17 @@ __all__ = [
     "FactoryToWindsurfConverter",
     "JsonlFile",
     "NativeSession",
+    "OmpRecordBuilder",
+    "OmpStore",
+    "OmpToClaudeConverter",
+    "OmpToCodexConverter",
+    "OmpToDevinConverter",
+    "OmpToFactoryConverter",
+    "OmpToFreebuffConverter",
+    "OmpToGrokConverter",
+    "OmpToOpenCodeConverter",
+    "OmpToPiConverter",
+    "OmpToWindsurfConverter",
     "OpenCodeStore",
     "OpenCodeToClaudeConverter",
     "OpenCodeToCodexConverter",
@@ -191,6 +213,7 @@ __all__ = [
     "T3Store",
     "T3WriteError",
     "T3_PROVIDER_DRIVERS",
+    "ToOmpConverter",
     "ToT3Converter",
     "WindsurfStore",
     "WindsurfToClaudeConverter",
@@ -213,5 +236,7 @@ __all__ = [
     "TRACE_FORMATS",
     "WindowsDefaults",
     "build_trace",
+    "encode_omp_cwd",
     "encode_pi_cwd",
+    "omp_title_slot",
 ]

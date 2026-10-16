@@ -7,8 +7,8 @@ hide:
 # UniSessions
 
 Convert AI coding CLI sessions between **Codex**, **Claude Code**, **Pi**,
-**OpenCode**, **Devin**, **Factory**, **Windsurf Cascade**, **Grok Build**, and
-**Freebuff Desktop**. SDK, CLI, MCP chat recall, and
+**OpenCode**, **Devin**, **Factory**, **Windsurf Cascade**, **Grok Build**,
+**Freebuff Desktop**, and **OMP** (oh-my-pi). SDK, CLI, MCP chat recall, and
 trace export for fine-tuning.
 
 [![PyPI](https://img.shields.io/pypi/v/unisessions?logo=pypi&logoColor=white)](https://pypi.org/project/unisessions/)
@@ -25,7 +25,7 @@ trace export for fine-tuning.
 ## Why I built this
 
 I use a lot of AI coding CLIs — Codex, Claude Code, Pi, OpenCode, Devin,
-Factory, Windsurf Cascade, Grok Build, Freebuff Desktop — and wanted to move a session from one tool into another without
+Factory, Windsurf Cascade, Grok Build, Freebuff Desktop, OMP — and wanted to move a session from one tool into another without
 losing the useful conversation history.
 
 I looked for a tool that could convert one AI CLI session into another and
@@ -39,7 +39,7 @@ explaining the same thing again.
 So this does three things:
 
 - **Move sessions** between Codex, Pi, OpenCode, Claude Code, Devin,
-  Factory, Windsurf Cascade, Grok Build, and Freebuff Desktop in any direction — all 72 combinations
+  Factory, Windsurf Cascade, Grok Build, Freebuff Desktop, and OMP in any direction — all 90 combinations
 - **Export traces** in HuggingFace STS, OpenAI fine-tuning, or ShareGPT
   format for Hub upload or model training
 - **Search chat history** across all sessions, providers, and projects so
@@ -50,22 +50,23 @@ and MCP server are just built on top of the SDK.
 
 ## Features
 
-### 72 conversion directions
+### 90 conversion directions
 
-Convert any session to any other format. All nine providers are supported in
+Convert any session to any other format. All ten providers are supported in
 every direction.
 
-| From \ To | Pi | Codex | OpenCode | Claude | Devin | Factory | Windsurf | Grok | Freebuff |
-|---|---|---|---|---|---|---|---|---|---|
-| **Codex** | ✓ | -- | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| **Pi** | -- | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| **OpenCode** | ✓ | ✓ | -- | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| **Claude** | ✓ | ✓ | ✓ | -- | ✓ | ✓ | ✓ | ✓ | ✓ |
-| **Devin** | ✓ | ✓ | ✓ | ✓ | -- | ✓ | ✓ | ✓ | ✓ |
-| **Factory** | ✓ | ✓ | ✓ | ✓ | ✓ | -- | ✓ | ✓ | ✓ |
-| **Windsurf** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | -- | ✓ | ✓ |
-| **Grok** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | -- | ✓ |
-| **Freebuff** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | -- |
+| From \ To | Pi | Codex | OpenCode | Claude | Devin | Factory | Windsurf | Grok | Freebuff | OMP |
+|---|---|---|---|---|---|---|---|---|---|---|
+| **Codex** | ✓ | -- | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| **Pi** | -- | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| **OpenCode** | ✓ | ✓ | -- | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| **Claude** | ✓ | ✓ | ✓ | -- | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| **Devin** | ✓ | ✓ | ✓ | ✓ | -- | ✓ | ✓ | ✓ | ✓ | ✓ |
+| **Factory** | ✓ | ✓ | ✓ | ✓ | ✓ | -- | ✓ | ✓ | ✓ | ✓ |
+| **Windsurf** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | -- | ✓ | ✓ | ✓ |
+| **Grok** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | -- | ✓ | ✓ |
+| **Freebuff** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | -- | ✓ |
+| **OMP** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | -- |
 
 ### Trace export
 
@@ -109,8 +110,8 @@ python -m unisessions codex-to-pi <session-id> --write
 
 ## Stats
 
-- **9 providers**: Codex, Pi, OpenCode, Claude Code, Devin, Factory, Windsurf Cascade, Grok Build, Freebuff Desktop
-- **72 conversion directions**: every provider to every other provider
+- **10 providers**: Codex, Pi, OpenCode, Claude Code, Devin, Factory, Windsurf Cascade, Grok Build, Freebuff Desktop, OMP
+- **90 conversion directions**: every provider to every other provider
 - **3 trace formats**: HuggingFace STS, OpenAI, ShareGPT
 - **40 tests**: conversion shape, compaction, dry-run safety, search, traces
 - **MIT licensed**: open source, do whatever

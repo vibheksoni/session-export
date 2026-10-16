@@ -1,7 +1,7 @@
 [project]
 name = "unisessions"
-version = "0.4.0"
-description = "Convert AI coding CLI sessions between Codex, Claude Code, Pi, OpenCode, Devin, Factory, Windsurf Cascade, Grok Build, and Freebuff Desktop. SDK, CLI, MCP chat recall, and trace export for fine-tuning."
+version = "0.5.0"
+description = "Convert AI coding CLI sessions between Codex, Claude Code, Pi, OpenCode, Devin, Factory, Windsurf Cascade, Grok Build, Freebuff Desktop, and OMP (oh-my-pi). SDK, CLI, MCP chat recall, and trace export for fine-tuning."
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.11"
@@ -34,6 +34,8 @@ keywords = [
     "freebuff",
     "freebuff-desktop",
     "codebuff",
+    "oh-my-pi",
+    "omp",
 ]
 classifiers = [
     "Development Status :: 4 - Beta",

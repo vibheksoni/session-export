@@ -322,6 +322,92 @@ Freebuff Desktop may hold `desktop-v2.db` open with a WAL journal. `FreebuffStor
 
 Where `{freebuff_home}` is `$FREEBUFF_CONFIG_DIR` if set, otherwise `~/.config/freebuff-desktop`.
 
+## OmpStore
+
+```python
+from session_sdk.stores import OmpStore
+
+store = OmpStore(defaults.omp_agent_home)
+# Or with a custom sessions root:
+store = OmpStore(defaults.omp_agent_home, session_dir=Path("/custom/omp/sessions"))
+```
+
+| Method | Description |
+|---|---|
+| `list(workers=1)` | Scan `sessions/<bucket>/*.jsonl` files. Parses each file for a message count. |
+| `list_metadata(workers=1)` | Read only the header (first line, or second line after the title slot). |
+| `load(session_id)` | Find by session id from the header or the file name. |
+| `load_path(path)` | Load a specific JSONL file. |
+| `destination_path(session_id, timestamp, cwd)` | Compute target: `sessions/<bucket>/<timestamp>_<session-id>.jsonl`. |
+| `write(path, records, overwrite=False)` | Write JSONL records. A leading title slot must be exactly 256 bytes. |
+
+### OMP Format
+
+OMP (oh-my-pi, a fork of the Pi coding agent) stores one JSONL file per session:
+
+```
+{omp_agent_home}/sessions/<bucket>/<timestamp>_<session-id>.jsonl
+```
+
+- **Line 1**: a `title` slot. It is exactly 256 bytes including the newline, padded with spaces, so omp can rewrite the title in place. Build it with `omp_title_slot()` (`OMP_TITLE_SLOT_BYTES` is 256). Older files have no slot; they are read too.
+- **Line 2**: the `session` header -- `version: 3`, `id`, `timestamp`, `cwd`, and optional `title`/`titleSource`. The slot title wins over the header title.
+- **Later lines**: entries linked by `id`/`parentId`. They form a tree; rewinding a session adds a branch in the same file.
+- **Session IDs**: UUIDs (omp mints UUIDv7).
+
+Only `<root>/*/*.jsonl` files are sessions. Deeper files, such as subagent transcripts in `<bucket>/<timestamp>_<id>/`, are skipped, as omp does.
+
+### Buckets
+
+`encode_omp_cwd(cwd)` mirrors omp's `getDefaultSessionDirName`. The path is canonicalized first (symlinks resolved):
+
+- Inside the temp root (Node `os.tmpdir()`: `TMPDIR`, `TMP`, `TEMP`, or `/tmp`): `-tmp-<relative>`.
+- Inside the home directory: `-<relative>`. The home directory itself is `-`.
+- Anywhere else: `--<absolute>--`.
+
+`/`, `\`, and `:` become `-`. A cwd that is not absolute on the current platform is encoded as written. For example, `~/projects/demo-app` becomes `-projects-demo-app` and `/srv/app` becomes `--srv-app--`.
+
+### Reading
+
+`MessageExtractor.from_omp` reads only the active branch: from the root to omp's leaf, which is the last entry or the entry a `model_usage` record's `activeLeafId` points to.
+
+- User and assistant text is kept. Compaction summaries become compaction messages.
+- A `/skill:` request or a collaborator's prompt is stored as a user-attributed `custom_message` (`skill-prompt`, `collab-prompt`) and is kept as a user message, as omp counts it.
+- `developer` messages (system reminders), `synthetic` user messages, other `custom_message` entries, and `branch_summary` summaries are contextual: they are indexed for search and dropped on export.
+- A `reset_boundary` (`/clear`) takes everything before it out of omp's context, so those messages are contextual too.
+- Thinking, tool calls, tool results, `bashExecution`, and `fileMention` are skipped.
+- The model and provider come from the assistant message, else from the latest default-role `model_change` (`model: "provider/id"`; Pi's `provider`/`modelId` are read too).
+
+### Writing
+
+`OmpRecordBuilder` writes the title slot, the header, and one `message` entry per user or assistant message, each the child of the previous one.
+
+- The title is the first line of the first user message (at most 80 characters, whitespace collapsed).
+- A compaction summary becomes a `compaction` entry whose `firstKeptEntryId` is its own id. It keeps nothing before it, so a resumed session starts from the summary.
+- Assistant messages keep the source provider, model, and api when known. Otherwise they use `session-export` / `imported` / `openai-completions`, the same placeholders as the Pi builder.
+- Claude Code records the model but not the provider, so replies from Claude sources are written as provider `anthropic`, api `anthropic-messages`, as omp's own Claude importer does.
+- Token usage is zero.
+- A final `custom` entry `foreign_session_import` records `{source, sourceId, sourcePath, sourceCwd}`. omp's own importers write the same entry, and it is never sent to a model.
+- Timestamps are normalized to `YYYY-MM-DDTHH:MM:SS.mmmZ`.
+- Non-UUID source ids map to a stable UUID, which keeps `_` out of the file name. A source with no cwd goes to the home bucket. Output is deterministic.
+
+omp itself ships `omp --from-claude` and `omp --from-codex` to import those two sources. Unisessions adds the other sources, OMP as a source, search, and traces.
+
+### Resuming
+
+omp resumes a session on the model its last reply names. When that model is not available, interactive omp falls back to the configured model with a warning. `omp -p` and RPC mode refuse to resume (`Could not restore model ...`) unless you pass `--model`:
+
+```sh
+omp --resume <session-id> --model <provider/model> -p "continue"
+```
+
+### Default Paths
+
+```
+{omp_agent_home}/sessions/<bucket>/<timestamp>_<session-id>.jsonl
+```
+
+Where `{omp_agent_home}` is resolved like omp does: `~/.omp/agent` by default. `PI_CONFIG_DIR` renames `.omp`. `OMP_PROFILE` (or legacy `PI_PROFILE`) selects `~/.omp/profiles/<name>/agent`. `PI_CODING_AGENT_DIR` overrides the agent dir when no profile is active. On Linux and macOS, `$XDG_DATA_HOME/omp` is used when that folder exists (after `omp config init-xdg`).
+
 ## Caching Behavior
 
 All `SessionStore` subclasses cache two data structures after the first access:

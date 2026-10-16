@@ -28,6 +28,7 @@ defaults = WindowsDefaults(home=Path("/custom/home"))
 | `windsurf_home` | `<home>/.codeium/windsurf` | `WINDSURF_CONFIG_DIR` |
 | `grok_home` | `<home>/.grok` | `GROK_HOME` |
 | `freebuff_home` | `<home>/.config/freebuff-desktop` | `FREEBUFF_CONFIG_DIR` |
+| `omp_agent_home` | `<home>/.omp/agent` | `PI_CONFIG_DIR`, `OMP_PROFILE`, `PI_PROFILE`, `PI_CODING_AGENT_DIR`, `XDG_DATA_HOME` |
 | `t3_home` | `<home>/.t3` | `T3CODE_HOME` |
 | `opencode_session_dir` | `<opencode_data_home>/session-export` | -- |
 
@@ -40,6 +41,8 @@ defaults = WindowsDefaults(home=Path("/custom/home"))
 `claude_home` checks `CLAUDE_CONFIG_DIR` first, then falls back to `<home>/.claude`.
 
 `freebuff_home` checks `FREEBUFF_CONFIG_DIR` first, then falls back to `<home>/.config/freebuff-desktop`.
+
+`omp_agent_home` is resolved like omp does. The default is `<home>/.omp/agent`. `PI_CONFIG_DIR` renames `.omp`. `OMP_PROFILE` (or legacy `PI_PROFILE`) selects `<home>/.omp/profiles/<name>/agent`. `PI_CODING_AGENT_DIR` overrides the agent dir when no profile is active. On Linux and macOS, `$XDG_DATA_HOME/omp` is used when that folder exists (after `omp config init-xdg`).
 
 ## SessionIdFactory
 
@@ -96,6 +99,26 @@ sanitize_claude_cwd("C:\\Projects\\myproject")
 ```
 
 Strips `\\?\` prefix, then replaces every non-alphanumeric character with `-`.
+
+## encode_omp_cwd
+
+Encodes a cwd path into OMP's session bucket name. Mirrors `getDefaultSessionDirName` in omp.
+
+```python
+from session_sdk.paths import encode_omp_cwd
+
+encode_omp_cwd("/home/me/projects/demo-app")  # home is /home/me
+# --> "-projects-demo-app"
+encode_omp_cwd("/srv/app")
+# --> "--srv-app--"
+```
+
+Steps:
+1. Canonicalize the path (symlinks resolved). A cwd that is not absolute on the current platform is encoded as written.
+2. Inside the temp root (Node `os.tmpdir()`: `TMPDIR`, `TMP`, `TEMP`, or `/tmp`): `-tmp-<relative>`.
+3. Inside the home directory: `-<relative>`. The home directory itself is `-`.
+4. Anywhere else: `--<absolute>--`.
+5. Replace `/`, `\`, and `:` with `-`.
 
 ## encode_grok_cwd_dirname
 

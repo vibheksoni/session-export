@@ -68,7 +68,7 @@ Arguments:
 
 | Argument | Description |
 |---|---|
-| `provider` | Source provider: `codex`, `pi`, `opencode`, `claude`, `devin`, `factory`, `windsurf`, `grok`, `freebuff` |
+| `provider` | Source provider: `codex`, `pi`, `opencode`, `claude`, `devin`, `factory`, `windsurf`, `grok`, `freebuff`, `omp` |
 | `session_id` | Session ID to export |
 | `--format` | Trace format: `sts` (default), `openai`, `sharegpt` |
 | `--output`, `-o` | Output file path (required with `--write`) |
@@ -76,7 +76,7 @@ Arguments:
 
 ### All providers supported
 
-The `to-trace` command works with all 9 providers:
+The `to-trace` command works with all 10 providers:
 
 ```powershell
 python -m unisessions to-trace codex <session-id> --format sts
@@ -88,6 +88,7 @@ python -m unisessions to-trace factory <session-id> --format sharegpt
 python -m unisessions to-trace windsurf <session-id> --format sts
 python -m unisessions to-trace grok <session-id> --format sts
 python -m unisessions to-trace freebuff <session-id> --format sts
+python -m unisessions to-trace omp <session-id> --format sts
 ```
 
 ## SDK Usage

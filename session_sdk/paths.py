@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import string
 import sys
 from datetime import UTC, datetime
@@ -127,6 +128,31 @@ class WindowsDefaults:
         return self._home / ".t3"
 
     @property
+    def omp_agent_home(self) -> Path:
+        """The directory holding OMP's ``sessions/`` folder, resolved the way omp resolves it.
+
+        ``~/.omp/agent`` by default. ``PI_CONFIG_DIR`` renames ``.omp``, ``OMP_PROFILE`` (or the
+        legacy ``PI_PROFILE``) selects ``~/.omp/profiles/<name>/agent``, and ``PI_CODING_AGENT_DIR``
+        replaces the agent directory when no profile is active. On Linux and macOS, data that
+        ``omp config init-xdg`` moved to ``$XDG_DATA_HOME/omp`` is used when that folder exists.
+        """
+        profile = _omp_profile()
+        config_root = self._home / (os.environ.get("PI_CONFIG_DIR") or ".omp")
+        if profile:
+            config_root = config_root / "profiles" / profile
+        default_agent = config_root / "agent"
+        override = None if profile else os.environ.get("PI_CODING_AGENT_DIR")
+        agent = Path(os.path.abspath(override)) if override else default_agent
+        xdg_data = os.environ.get("XDG_DATA_HOME")
+        if agent == default_agent and xdg_data and sys.platform in ("linux", "darwin"):
+            app_root = Path(xdg_data) / "omp"
+            if profile:
+                app_root = app_root / "profiles" / profile
+            if app_root.exists():
+                return app_root
+        return agent
+
+    @property
     def opencode_session_dir(self) -> Path:
         return self.opencode_data_home / "session-export"
 
@@ -236,6 +262,93 @@ def encode_pi_cwd(cwd: str) -> str:
     stripped = resolved.lstrip("/\\")
     encoded = stripped.replace("/", "-").replace("\\", "-").replace(":", "-")
     return f"--{encoded}--"
+
+
+_OMP_PROFILE_RE = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}")
+_WINDOWS_RESERVED_NAME_RE = re.compile(r"(?:CON|PRN|AUX|NUL|COM[0-9]|LPT[0-9])(?:\..*)?", re.IGNORECASE)
+_OMP_SEPARATORS_RE = re.compile(r"[/\\:]")
+
+
+def _omp_profile() -> str | None:
+    """The active omp profile: ``OMP_PROFILE``, else the legacy ``PI_PROFILE``. An empty value or
+    ``default`` selects the default profile. omp refuses to start with an invalid profile name;
+    here an invalid name also falls back to the default profile."""
+    selected = os.environ.get("OMP_PROFILE")
+    if selected is None:
+        selected = os.environ.get("PI_PROFILE")
+    name = (selected or "").strip()
+    if not name or name == "default" or name.endswith("."):
+        return None
+    if not _OMP_PROFILE_RE.fullmatch(name) or _WINDOWS_RESERVED_NAME_RE.fullmatch(name):
+        return None
+    return name
+
+
+def _node_tmpdir() -> str:
+    """``os.tmpdir()`` as Node and Bun compute it. omp names its ``-tmp`` buckets against it, and
+    it differs from ``tempfile.gettempdir()``, which also probes other folders."""
+    if sys.platform == "win32":
+        system_root = os.environ.get("SystemRoot") or os.environ.get("windir") or ""
+        return os.environ.get("TEMP") or os.environ.get("TMP") or f"{system_root}\\temp"
+    return os.environ.get("TMPDIR") or os.environ.get("TMP") or os.environ.get("TEMP") or "/tmp"
+
+
+def _omp_canonical_path(path: str) -> str:
+    """Absolute path with symlinks resolved, or just absolute when the path does not exist (omp's
+    ``resolveEquivalentPath``). A non-strict realpath would resolve the existing prefix only."""
+    absolute = os.path.abspath(path)
+    try:
+        return os.path.realpath(absolute, strict=True)
+    except OSError:
+        return absolute
+
+
+def _omp_relative_within(root: str, path: str) -> str | None:
+    """``path`` relative to ``root`` ("" when equal), or None when it lies outside ``root``."""
+    try:
+        relative = os.path.relpath(path, root)
+    except ValueError:  # different drives on Windows
+        return None
+    if relative == ".":
+        return ""
+    # Same test as omp, which also treats a child named like "..name" as outside.
+    if relative.startswith("..") or os.path.isabs(relative):
+        return None
+    return relative
+
+
+def _encode_omp_relative(prefix: str, relative: str) -> str:
+    encoded = _OMP_SEPARATORS_RE.sub("-", relative)
+    if not encoded:
+        return prefix
+    return f"{prefix}{encoded}" if prefix.endswith("-") else f"{prefix}-{encoded}"
+
+
+def _encode_omp_absolute(path: str) -> str:
+    stripped = path[1:] if path[:1] in ("/", "\\") else path
+    return f"--{_OMP_SEPARATORS_RE.sub('-', stripped)}--"
+
+
+def encode_omp_cwd(cwd: str, *, home: Path | None = None, temp_root: Path | None = None) -> str:
+    """OMP's session bucket name for a cwd (``getDefaultSessionDirName`` in omp's session-paths.ts).
+
+    A cwd inside the temp root becomes ``-tmp-<relative>``, one inside home ``-<relative>`` (home
+    itself is ``-``), and any other ``--<absolute>--``; ``/``, ``\\`` and ``:`` turn into ``-``.
+    All paths are canonicalized first, as omp does, so a symlinked cwd lands in the bucket of its
+    target. A cwd that is not absolute on this platform (a Windows path read on Linux, say) has no
+    canonical form here and is encoded as given.
+    """
+    if not os.path.isabs(cwd):
+        return _encode_omp_absolute(cwd)
+    canonical = _omp_canonical_path(cwd)
+    # The temp root is checked first: it is the more specific root where it nests inside home.
+    relative = _omp_relative_within(_omp_canonical_path(str(temp_root) if temp_root else _node_tmpdir()), canonical)
+    if relative is not None:
+        return _encode_omp_relative("-tmp", relative)
+    relative = _omp_relative_within(_omp_canonical_path(str(home or Path.home())), canonical)
+    if relative is not None:
+        return _encode_omp_relative("-", relative)
+    return _encode_omp_absolute(canonical)
 
 
 def encode_grok_cwd_dirname(cwd: str) -> str:

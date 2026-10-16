@@ -53,6 +53,7 @@ python -m unisessions list factory
 python -m unisessions list windsurf
 python -m unisessions list grok
 python -m unisessions list freebuff
+python -m unisessions list omp
 ```
 
 Each command should print a tab-separated list of sessions or "no sessions found."

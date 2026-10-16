@@ -16,6 +16,7 @@ python -m unisessions list factory
 python -m unisessions list windsurf
 python -m unisessions list grok
 python -m unisessions list freebuff
+python -m unisessions list omp
 ```
 
 Output is tab-separated: provider, session ID, timestamp, message count, cwd, file path.
@@ -109,19 +110,20 @@ On a 20-session corpus, cold refresh takes ~39-49 seconds. Warm search returns i
 
 ## All Conversion Commands
 
-There are 72 single-session conversion commands, one for each ordered pair of tools:
+There are 90 single-session conversion commands, one for each ordered pair of tools:
 
 | Source | Targets |
 |---|---|
-| Codex | pi, opencode, claude, devin, factory, windsurf, grok |
-| Pi | codex, opencode, claude, devin, factory, windsurf, grok |
-| OpenCode | codex, pi, claude, devin, factory, windsurf, grok |
-| Claude | pi, codex, opencode, devin, factory, windsurf, grok |
-| Devin | pi, codex, opencode, claude, factory, windsurf, grok |
-| Factory | pi, codex, opencode, claude, devin, windsurf, grok |
-| Windsurf | pi, codex, opencode, claude, devin, factory, grok |
-| Grok | pi, codex, opencode, claude, devin, factory, windsurf |
-| Freebuff | pi, codex, opencode, claude, devin, factory, windsurf, grok |
+| Codex | pi, opencode, claude, devin, factory, windsurf, grok, freebuff, omp |
+| Pi | codex, opencode, claude, devin, factory, windsurf, grok, freebuff, omp |
+| OpenCode | codex, pi, claude, devin, factory, windsurf, grok, freebuff, omp |
+| Claude | pi, codex, opencode, devin, factory, windsurf, grok, freebuff, omp |
+| Devin | pi, codex, opencode, claude, factory, windsurf, grok, freebuff, omp |
+| Factory | pi, codex, opencode, claude, devin, windsurf, grok, freebuff, omp |
+| Windsurf | pi, codex, opencode, claude, devin, factory, grok, freebuff, omp |
+| Grok | pi, codex, opencode, claude, devin, factory, windsurf, freebuff, omp |
+| Freebuff | pi, codex, opencode, claude, devin, factory, windsurf, grok, omp |
+| OMP | pi, codex, opencode, claude, devin, factory, windsurf, grok, freebuff |
 
 ```bash
 python -m unisessions <source>-to-<target> <session-id> --write

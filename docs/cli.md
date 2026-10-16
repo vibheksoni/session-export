@@ -14,14 +14,14 @@ python -m unisessions list <provider> [--workers N]
 
 | Argument | Description |
 |---|---|
-| `provider` | Required. One of `codex`, `pi`, `opencode`, `claude`, `devin`, `factory`, `windsurf`, `grok`, `freebuff`, `t3`. |
+| `provider` | Required. One of `codex`, `pi`, `opencode`, `claude`, `devin`, `factory`, `windsurf`, `grok`, `freebuff`, `omp`, `t3`. |
 | `--workers N` | Parallel listing workers (default: 1). |
 
 Output is tab-separated: provider, session ID, timestamp, message count, cwd, file path.
 
 ### Single-Session Conversion
 
-72 conversion commands, one for each ordered pair of tools:
+90 conversion commands, one for each ordered pair of tools, plus 20 T3 Code commands:
 
 ```bash
 python -m unisessions <source>-to-<target> <session-id> [flags]
@@ -101,6 +101,24 @@ python -m unisessions <source>-to-<target> <session-id> [flags]
 | `windsurf-to-freebuff` | Windsurf | Freebuff Desktop |
 | `freebuff-to-grok` | Freebuff Desktop | Grok Build |
 | `grok-to-freebuff` | Grok Build | Freebuff Desktop |
+| `omp-to-pi` | OMP | Pi |
+| `pi-to-omp` | Pi | OMP |
+| `omp-to-codex` | OMP | Codex |
+| `codex-to-omp` | Codex | OMP |
+| `omp-to-opencode` | OMP | OpenCode |
+| `opencode-to-omp` | OpenCode | OMP |
+| `omp-to-claude` | OMP | Claude Code |
+| `claude-to-omp` | Claude Code | OMP |
+| `omp-to-devin` | OMP | Devin |
+| `devin-to-omp` | Devin | OMP |
+| `omp-to-factory` | OMP | Factory |
+| `factory-to-omp` | Factory | OMP |
+| `omp-to-windsurf` | OMP | Windsurf |
+| `windsurf-to-omp` | Windsurf | OMP |
+| `omp-to-grok` | OMP | Grok Build |
+| `grok-to-omp` | Grok Build | OMP |
+| `omp-to-freebuff` | OMP | Freebuff Desktop |
+| `freebuff-to-omp` | Freebuff Desktop | OMP |
 | `t3-to-pi` | T3 Code | Pi |
 | `t3-to-codex` | T3 Code | Codex |
 | `t3-to-opencode` | T3 Code | OpenCode |
@@ -110,6 +128,7 @@ python -m unisessions <source>-to-<target> <session-id> [flags]
 | `t3-to-windsurf` | T3 Code | Windsurf |
 | `t3-to-grok` | T3 Code | Grok Build |
 | `t3-to-freebuff` | T3 Code | Freebuff Desktop |
+| `t3-to-omp` | T3 Code | OMP |
 | `pi-to-t3` | Pi | T3 Code (experimental) |
 | `codex-to-t3` | Codex | T3 Code (experimental) |
 | `opencode-to-t3` | OpenCode | T3 Code (experimental) |
@@ -119,6 +138,7 @@ python -m unisessions <source>-to-<target> <session-id> [flags]
 | `windsurf-to-t3` | Windsurf | T3 Code (experimental) |
 | `grok-to-t3` | Grok Build | T3 Code (experimental) |
 | `freebuff-to-t3` | Freebuff Desktop | T3 Code (experimental) |
+| `omp-to-t3` | OMP | T3 Code (experimental) |
 
 #### Flags
 
@@ -145,12 +165,12 @@ python -m unisessions codex-to-pi-all [--write] [--workers N] [--on-conflict MOD
 Bulk export all Codex sessions to one or more targets.
 
 ```bash
-python -m unisessions export-all --targets pi opencode claude devin factory windsurf grok freebuff [--write] [--workers N] [--on-conflict MODE]
+python -m unisessions export-all --targets pi opencode claude devin factory windsurf grok freebuff omp [--write] [--workers N] [--on-conflict MODE]
 ```
 
 | Flag | Description |
 |---|---|
-| `--targets {pi,opencode,claude,devin,factory,windsurf,grok,freebuff} [...]` | Target formats. Default: `pi`. |
+| `--targets {pi,opencode,claude,devin,factory,windsurf,grok,freebuff,omp} [...]` | Target formats. Default: `pi`. |
 | `--write` | Write converted sessions. Without this, prints a dry-run summary. |
 | `--workers N` | Parallel workers (default: 8). |
 | `--overwrite` | Alias for `--on-conflict overwrite`. |
@@ -167,7 +187,7 @@ python -m unisessions to-trace <provider> <session-id> --format <format> [--writ
 
 | Argument | Description |
 |---|---|
-| `provider` | Source provider: `codex`, `pi`, `opencode`, `claude`, `devin`, `factory`, `windsurf`, `grok`, `freebuff`, `t3`. |
+| `provider` | Source provider: `codex`, `pi`, `opencode`, `claude`, `devin`, `factory`, `windsurf`, `grok`, `freebuff`, `omp`, `t3`. |
 | `session_id` | Session ID to export. |
 | `--format` | Trace format: `sts` (default), `openai`, `sharegpt`. |
 | `--output`, `-o` | Output file path (required with `--write`). |
@@ -217,6 +237,8 @@ All commands accept these flags to override system default paths:
 | `--t3-home` | `$T3CODE_HOME` or `~/.t3` | T3 Code home. Reads come from `<home>/userdata` (read-only). `*-to-t3` writes need this flag and a new, empty home. |
 | `--t3-provider` | `codex` | `*-to-t3` only (experimental). T3 provider the imported thread runs on: `codex`, `claudeAgent`, `opencode`, `pi`, or `grok`. |
 | `--freebuff-session-dir` | `<freebuff-home>/projects` | Root containing Freebuff project directories (each with `desktop-v2.db`). |
+| `--omp-agent-home` | `<home>/.omp/agent` (see [Paths](paths.md)) | OMP agent dir holding `sessions/`. |
+| `--omp-session-dir` | `<omp-agent-home>/sessions` | OMP sessions root holding the per-project folders. |
 
 When a session directory override is provided, the store scans that directory directly instead of the tool's default location. This is useful for testing, custom installations, or working with exported session archives.
 

@@ -19,9 +19,9 @@ from typing import Callable, Literal, Sequence
 
 from session_sdk.converters import MessageExtractor
 from session_sdk.models import NativeSession, SessionSummary, TextMessage
-from session_sdk.stores import ClaudeStore, CodexStore, DevinStore, FactoryStore, OpenCodeStore, PiStore, SessionStore, T3Store, WindsurfStore
+from session_sdk.stores import ClaudeStore, CodexStore, DevinStore, FactoryStore, OmpStore, OpenCodeStore, PiStore, SessionStore, T3Store, WindsurfStore
 
-Provider = Literal["all", "codex", "pi", "opencode", "claude", "devin", "factory", "windsurf", "grok", "freebuff", "t3"]
+Provider = Literal["all", "codex", "pi", "opencode", "claude", "devin", "factory", "windsurf", "grok", "freebuff", "t3", "omp"]
 CwdMatch = Literal["exact", "contains", "prefix"]
 MatchMode = Literal["literal", "regex", "all_keywords", "any_keywords"]
 StalePolicy = Literal["refresh", "skip", "error"]
@@ -922,7 +922,7 @@ class SessionSearchIndex:
 
 
 class SessionSearchEngine:
-    def __init__(self, codex: CodexStore, pi: PiStore, opencode: OpenCodeStore, index_path: Path | None = None, claude: ClaudeStore | None = None, devin: DevinStore | None = None, factory: FactoryStore | None = None, windsurf: WindsurfStore | None = None, grok: GrokStore | None = None, freebuff: FreebuffStore | None = None, t3: T3Store | None = None) -> None:
+    def __init__(self, codex: CodexStore, pi: PiStore, opencode: OpenCodeStore, index_path: Path | None = None, claude: ClaudeStore | None = None, devin: DevinStore | None = None, factory: FactoryStore | None = None, windsurf: WindsurfStore | None = None, grok: GrokStore | None = None, freebuff: FreebuffStore | None = None, t3: T3Store | None = None, omp: OmpStore | None = None) -> None:
         self._stores: dict[str, SessionStore] = {
             "codex": codex,
             "pi": pi,
@@ -942,6 +942,8 @@ class SessionSearchEngine:
             self._stores["freebuff"] = freebuff
         if t3 is not None:
             self._stores["t3"] = t3
+        if omp is not None:
+            self._stores["omp"] = omp
         self._extractor = MessageExtractor()
         self._index = SessionSearchIndex(index_path)
 

@@ -35,7 +35,7 @@ class ConversionPlan:
     services: tuple[Path, ...]  # DCP sidecar paths (Pi targets only)
 ```
 
-## All 72 Converters
+## All 90 Conversion Directions
 
 ### CodexToPiConverter
 
@@ -469,19 +469,53 @@ GrokToFreebuffConverter(grok_store, freebuff_store, id_factory)
 
 Converts Grok Build ACP session directories to a Freebuff Desktop project DB. Uses `FreebuffRecordBuilder`.
 
+### OmpToPiConverter
+
+```python
+OmpToPiConverter(omp_store, pi_store, dcp_store, id_factory)
+```
+
+Converts OMP session JSONL to Pi session JSONL. Extracts text via `MessageExtractor.from_omp` (active branch only) and writes a DCP sidecar.
+
+### OmpToCodexConverter, OmpToOpenCodeConverter, OmpToClaudeConverter, OmpToDevinConverter, OmpToFactoryConverter, OmpToWindsurfConverter, OmpToGrokConverter, OmpToFreebuffConverter
+
+```python
+OmpToCodexConverter(omp_store, codex_store, id_factory)
+OmpToOpenCodeConverter(omp_store, opencode_store, id_factory)
+OmpToClaudeConverter(omp_store, claude_store, id_factory)
+OmpToDevinConverter(omp_store, devin_store, id_factory)
+OmpToFactoryConverter(omp_store, factory_store, id_factory)
+OmpToWindsurfConverter(omp_store, windsurf_store, id_factory)
+OmpToGrokConverter(omp_store, grok_store, id_factory)
+OmpToFreebuffConverter(omp_store, freebuff_store, id_factory)
+```
+
+Convert OMP session JSONL to each target format with that target's record builder.
+
+These converters share source-agnostic base classes with the T3-to-X converters. T3 behavior is unchanged.
+
+### ToOmpConverter
+
+```python
+ToOmpConverter(source_store, omp_store, id_factory)
+```
+
+Converts a session from any source store (Codex, Pi, OpenCode, Claude, Devin, Factory, Windsurf, Grok, Freebuff, T3) to OMP session JSONL. Uses `OmpRecordBuilder`. Every `<provider>-to-omp` command uses it.
+
 ## Conversion Matrix
 
-| Source \ Target | Codex | Pi | OpenCode | Claude | Devin | Factory | Windsurf | Grok | Freebuff |
-|---|---|---|---|---|---|---|---|---|---|
-| **Codex** | -- | CodexToPi | CodexToOpenCode | CodexToClaude | CodexToDevin | CodexToFactory | CodexToWindsurf | CodexToGrok | CodexToFreebuff |
-| **Pi** | PiToCodex | -- | PiToOpenCode | PiToClaude | PiToDevin | PiToFactory | PiToWindsurf | PiToGrok | PiToFreebuff |
-| **OpenCode** | OpenCodeToCodex | OpenCodeToPi | -- | OpenCodeToClaude | OpenCodeToDevin | OpenCodeToFactory | OpenCodeToWindsurf | OpenCodeToGrok | OpenCodeToFreebuff |
-| **Claude** | ClaudeToCodex | ClaudeToPi | ClaudeToOpenCode | -- | ClaudeToDevin | ClaudeToFactory | ClaudeToWindsurf | ClaudeToGrok | ClaudeToFreebuff |
-| **Devin** | DevinToCodex | DevinToPi | DevinToOpenCode | DevinToClaude | -- | DevinToFactory | DevinToWindsurf | DevinToGrok | DevinToFreebuff |
-| **Factory** | FactoryToCodex | FactoryToPi | FactoryToOpenCode | FactoryToClaude | FactoryToDevin | -- | FactoryToWindsurf | FactoryToGrok | FactoryToFreebuff |
-| **Windsurf** | WindsurfToCodex | WindsurfToPi | WindsurfToOpenCode | WindsurfToClaude | WindsurfToDevin | WindsurfToFactory | -- | WindsurfToGrok | WindsurfToFreebuff |
-| **Grok** | GrokToCodex | GrokToPi | GrokToOpenCode | GrokToClaude | GrokToDevin | GrokToFactory | GrokToWindsurf | -- | GrokToFreebuff |
-| **Freebuff** | FreebuffToCodex | FreebuffToPi | FreebuffToOpenCode | FreebuffToClaude | FreebuffToDevin | FreebuffToFactory | FreebuffToWindsurf | FreebuffToGrok | -- |
+| Source \ Target | Codex | Pi | OpenCode | Claude | Devin | Factory | Windsurf | Grok | Freebuff | OMP |
+|---|---|---|---|---|---|---|---|---|---|---|
+| **Codex** | -- | CodexToPi | CodexToOpenCode | CodexToClaude | CodexToDevin | CodexToFactory | CodexToWindsurf | CodexToGrok | CodexToFreebuff | ToOmp |
+| **Pi** | PiToCodex | -- | PiToOpenCode | PiToClaude | PiToDevin | PiToFactory | PiToWindsurf | PiToGrok | PiToFreebuff | ToOmp |
+| **OpenCode** | OpenCodeToCodex | OpenCodeToPi | -- | OpenCodeToClaude | OpenCodeToDevin | OpenCodeToFactory | OpenCodeToWindsurf | OpenCodeToGrok | OpenCodeToFreebuff | ToOmp |
+| **Claude** | ClaudeToCodex | ClaudeToPi | ClaudeToOpenCode | -- | ClaudeToDevin | ClaudeToFactory | ClaudeToWindsurf | ClaudeToGrok | ClaudeToFreebuff | ToOmp |
+| **Devin** | DevinToCodex | DevinToPi | DevinToOpenCode | DevinToClaude | -- | DevinToFactory | DevinToWindsurf | DevinToGrok | DevinToFreebuff | ToOmp |
+| **Factory** | FactoryToCodex | FactoryToPi | FactoryToOpenCode | FactoryToClaude | FactoryToDevin | -- | FactoryToWindsurf | FactoryToGrok | FactoryToFreebuff | ToOmp |
+| **Windsurf** | WindsurfToCodex | WindsurfToPi | WindsurfToOpenCode | WindsurfToClaude | WindsurfToDevin | WindsurfToFactory | -- | WindsurfToGrok | WindsurfToFreebuff | ToOmp |
+| **Grok** | GrokToCodex | GrokToPi | GrokToOpenCode | GrokToClaude | GrokToDevin | GrokToFactory | GrokToWindsurf | -- | GrokToFreebuff | ToOmp |
+| **Freebuff** | FreebuffToCodex | FreebuffToPi | FreebuffToOpenCode | FreebuffToClaude | FreebuffToDevin | FreebuffToFactory | FreebuffToWindsurf | FreebuffToGrok | -- | ToOmp |
+| **OMP** | OmpToCodex | OmpToPi | OmpToOpenCode | OmpToClaude | OmpToDevin | OmpToFactory | OmpToWindsurf | OmpToGrok | OmpToFreebuff | -- |
 
 ## MessageExtractor
 
@@ -496,6 +530,7 @@ All converters share a single `MessageExtractor` instance that extracts `TextMes
 | `from_windsurf(session)` | Windsurf Cascade encrypted protobuf |
 | `from_grok(session)` | Grok Build ACP `updates.jsonl` (streamed chunks grouped by `messageId`) |
 | `from_freebuff(session)` | Freebuff Desktop per-project SQLite (`threads` + `messages` rows; only `kind="text"` parts) |
+| `from_omp(session)` | OMP session JSONL (active branch only; see [Stores](stores.md#reading)) |
 
 ### Role Mapping
 
@@ -518,6 +553,7 @@ Codex injects contextual messages (developer permissions, AGENTS.md instructions
 | Claude | `system` records with `subtype="compact_boundary"` or messages with `isCompactSummary=True`. |
 | Windsurf | Checkpoint steps (field 30) in `CortexTrajectory` protobuf. |
 | Grok | Compaction summaries import as `user_message_chunk` envelopes (kept readable in Grok's TUI). |
+| OMP | `compaction` entries with `summary` field on the active branch. |
 
 ## Record Builders
 
@@ -577,6 +613,15 @@ Builds Freebuff Desktop records (SQLite rows) with:
 - One `{"seq", "role", "parts", "ts"}` record per message; `parts` is a `[{"kind": "text", "text": ...}]` array
 - Compaction summaries prefixed with `[compaction summary]`
 - `FreebuffStore.write` persists the records into a project `desktop-v2.db` (`projects`/`threads`/`messages` tables) plus `project.json`
+
+### OmpRecordBuilder
+
+Builds OMP session JSONL with:
+- A 256-byte `title` slot (`omp_title_slot`) and a `session` header (`version: 3`)
+- One `message` entry per user or assistant message, each the child of the previous one
+- Compaction as a `compaction` entry whose `firstKeptEntryId` is its own id
+- Source provider/model/api on assistant messages when known (else `session-export` / `imported` / `openai-completions`); zero token usage
+- A final `custom` entry `foreign_session_import` recording the source
 
 ## See Also
 
