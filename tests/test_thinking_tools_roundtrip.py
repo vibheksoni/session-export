@@ -11,6 +11,7 @@ from session_sdk.converters import (
     FreebuffRecordBuilder,
     GrokRecordBuilder,
     MessageExtractor,
+    OmpRecordBuilder,
     OpenCodeExportBuilder,
     PiRecordBuilder,
     WindsurfRecordBuilder,
@@ -74,6 +75,10 @@ def targets() -> dict[str, tuple[object, object]]:
         blobs = WindsurfRecordBuilder().build(SESSION, CWD, TS, conversation())
         return extractor.from_windsurf(session("windsurf", [{"_plaintext": windsurf_plaintext(blobs[0])}]))
 
+    def omp():
+        records = OmpRecordBuilder().build(SESSION, CWD, TS, conversation())
+        return extractor.from_omp(session("omp", records))
+
     def grok():
         records = GrokRecordBuilder().build(SESSION, CWD, TS, conversation())
         return extractor.from_grok(session("grok", records))
@@ -92,12 +97,13 @@ def targets() -> dict[str, tuple[object, object]]:
         "windsurf": windsurf,
         "grok": grok,
         "freebuff": freebuff,
+        "omp": omp,
     }
 
 
 # What each target can hold. Windsurf reads only run_command steps and has no error flag.
 # Devin and Codex have no error flag either.
-ERROR_FLAGS = {"pi", "claude", "opencode", "factory", "grok", "freebuff"}
+ERROR_FLAGS = {"pi", "claude", "opencode", "factory", "grok", "freebuff", "omp"}
 
 
 class ThinkingAndToolRoundTripTests(unittest.TestCase):

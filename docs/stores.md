@@ -374,7 +374,7 @@ Only `<root>/*/*.jsonl` files are sessions. Deeper files, such as subagent trans
 - A `/skill:` request or a collaborator's prompt is stored as a user-attributed `custom_message` (`skill-prompt`, `collab-prompt`) and is kept as a user message, as omp counts it.
 - `developer` messages (system reminders), `synthetic` user messages, other `custom_message` entries, and `branch_summary` summaries are contextual: they are indexed for search and dropped on export.
 - A `reset_boundary` (`/clear`) takes everything before it out of omp's context, so those messages are contextual too.
-- Thinking, tool calls, tool results, `bashExecution`, and `fileMention` are skipped.
+- Assistant `thinking` blocks are kept as reasoning. `toolCall` blocks are kept as tool calls, and the `toolResult` message with the same `toolCallId` becomes the call's output, with its `isError` flag. `bashExecution` and `fileMention` are skipped.
 - The model and provider come from the assistant message, else from the latest default-role `model_change` (`model: "provider/id"`; Pi's `provider`/`modelId` are read too).
 
 ### Writing
@@ -385,6 +385,7 @@ Only `<root>/*/*.jsonl` files are sessions. Deeper files, such as subagent trans
 - A compaction summary becomes a `compaction` entry whose `firstKeptEntryId` is its own id. It keeps nothing before it, so a resumed session starts from the summary.
 - Assistant messages keep the source provider, model, and api when known. Otherwise they use `session-export` / `imported` / `openai-completions`, the same placeholders as the Pi builder.
 - Claude Code records the model but not the provider, so replies from Claude sources are written as provider `anthropic`, api `anthropic-messages`, as omp's own Claude importer does.
+- Thinking is written as an unsigned `thinking` block. Tool calls are `toolCall` blocks, with `stopReason: "toolUse"` on the turn, and each one is followed by its `toolResult` message, as omp writes them. A call with no output gets the placeholder `(no output recorded)`.
 - Token usage is zero.
 - A final `custom` entry `foreign_session_import` records `{source, sourceId, sourcePath, sourceCwd}`. omp's own importers write the same entry, and it is never sent to a model.
 - Timestamps are normalized to `YYYY-MM-DDTHH:MM:SS.mmmZ`.

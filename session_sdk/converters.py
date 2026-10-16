@@ -334,10 +334,11 @@ class MessageExtractor:
         Injected text is contextual: ``developer`` messages (system reminders), ``synthetic``
         user messages, other ``custom_message`` entries, and summaries of abandoned branches.
         A ``reset_boundary`` (``/clear``) takes everything before it out of omp's context, so
-        those messages turn contextual too. Thinking, tool calls, tool results, shell runs and
-        file mentions are skipped, matching the text-history contract of every other provider.
+        those messages turn contextual too. Assistant thinking and tool calls are kept, with each
+        call's ``toolResult`` attached as its output. Shell runs and file mentions are skipped.
         """
         messages: list[TextMessage] = []
+        outputs: dict[str, tuple[str, bool]] = {}
         current_provider: str | None = None
         current_model: str | None = None
         for record in self._omp_active_branch(session.records):
@@ -367,12 +368,18 @@ class MessageExtractor:
                 if message is None:
                     continue
                 role = string_value(message, "role")
+                content = message.get("content")
+                if role == "toolResult":
+                    outputs[string_value(message, "toolCallId") or ""] = (self._result_text(content), bool(message.get("isError")))
+                    continue
                 if role not in ("user", "developer", "assistant"):
                     continue
-                text = self._content_text(message.get("content"))
-                if not text:
-                    continue
+                text = self._content_text(content)
                 if role == "assistant":
+                    thinking = self._block_thinking(content)
+                    tool_calls = self._block_tool_calls(content, ("toolCall",))
+                    if not text and not thinking and not tool_calls:
+                        continue
                     messages.append(
                         TextMessage(
                             "assistant",
@@ -381,12 +388,16 @@ class MessageExtractor:
                             model=string_value(message, "model") or current_model,
                             provider=string_value(message, "provider") or current_provider,
                             api=string_value(message, "api"),
+                            thinking=thinking,
+                            tool_calls=tool_calls,
                         )
                     )
-                else:
-                    contextual = role == "developer" or message.get("synthetic") is True or self._is_contextual(text)
-                    messages.append(TextMessage("user", text, timestamp, is_contextual=contextual))
-        return messages
+                    continue
+                if not text:
+                    continue
+                contextual = role == "developer" or message.get("synthetic") is True or self._is_contextual(text)
+                messages.append(TextMessage("user", text, timestamp, is_contextual=contextual))
+        return self._with_outputs(messages, outputs)
 
     # Custom messages that start a user turn in omp (``isUserTurnInitiator``).
     _OMP_USER_PROMPT_TYPES = ("skill-prompt", "collab-prompt")
@@ -1495,11 +1506,16 @@ class OmpRecordBuilder:
         parent_id: str | None = None
         last_iso = session_iso
         entry_count = 0
+
+        def next_entry_id() -> str:
+            nonlocal entry_count
+            entry_count += 1
+            return f"{entry_count:08x}"
+
         for message in messages:
             if message.is_contextual:
                 continue
-            entry_count += 1
-            entry_id = f"{entry_count:08x}"
+            entry_id = next_entry_id()
             moment = _omp_time(message.timestamp) or session_time
             last_iso = _omp_iso(moment)
             if message.is_compaction:
@@ -1514,20 +1530,47 @@ class OmpRecordBuilder:
                     "tokensBefore": context_tokens,
                 })
                 context_tokens = estimator.count(message.text)
+                parent_id = entry_id
+                continue
+            content: list[JsonObject] = []
+            if message.thinking:
+                # Unsigned: omp's thinking block takes an optional signature, and imported reasoning has none.
+                content.append({"type": "thinking", "thinking": message.thinking})
+            if message.text:
+                content.append({"type": "text", "text": message.text})
+            for call in message.tool_calls:
+                content.append({"type": "toolCall", "id": call.id, "name": call.name, "arguments": call.arguments})
+            payload: JsonObject = {"role": "assistant" if message.role == "assistant" else "user", "content": content}
+            if message.role == "assistant":
+                payload["api"] = message.api or "openai-completions"
+                payload["provider"] = message.provider or "session-export"
+                payload["model"] = message.model or "imported"
+                payload["usage"] = self._zero_usage()
+                payload["stopReason"] = "toolUse" if message.tool_calls else "stop"
             else:
-                payload: JsonObject = {"role": "assistant" if message.role == "assistant" else "user", "content": [{"type": "text", "text": message.text}]}
-                if message.role == "assistant":
-                    payload["api"] = message.api or "openai-completions"
-                    payload["provider"] = message.provider or "session-export"
-                    payload["model"] = message.model or "imported"
-                    payload["usage"] = self._zero_usage()
-                    payload["stopReason"] = "stop"
-                else:
-                    payload["attribution"] = "user"
-                payload["timestamp"] = _omp_epoch_ms(moment)
-                records.append({"type": "message", "id": entry_id, "parentId": parent_id, "timestamp": last_iso, "message": payload})
-                context_tokens += estimator.count(message.text)
+                payload["attribution"] = "user"
+            payload["timestamp"] = _omp_epoch_ms(moment)
+            records.append({"type": "message", "id": entry_id, "parentId": parent_id, "timestamp": last_iso, "message": payload})
+            context_tokens += estimator.count(message.text)
             parent_id = entry_id
+            # omp expects one toolResult message per toolCall, right after the assistant message.
+            for call in message.tool_calls:
+                result_id = next_entry_id()
+                records.append({
+                    "type": "message",
+                    "id": result_id,
+                    "parentId": parent_id,
+                    "timestamp": last_iso,
+                    "message": {
+                        "role": "toolResult",
+                        "toolCallId": call.id,
+                        "toolName": call.name,
+                        "content": [{"type": "text", "text": call.output if call.output is not None else "(no output recorded)"}],
+                        "isError": call.is_error,
+                        "timestamp": _omp_epoch_ms(moment),
+                    },
+                })
+                parent_id = result_id
 
         if source is not None:
             records.append({

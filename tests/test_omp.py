@@ -26,7 +26,7 @@ from session_sdk.converters import (
     ToOmpConverter,
 )
 from session_sdk.jsonl import JsonlFile
-from session_sdk.models import NativeSession, TextMessage
+from session_sdk.models import NativeSession, TextMessage, ToolCall
 from session_sdk.paths import SessionIdFactory, WindowsDefaults, encode_omp_cwd
 from session_sdk.search import SessionSearchEngine
 from session_sdk.stores import (
@@ -301,6 +301,44 @@ class OmpExtractionTests(unittest.TestCase):
         session = NativeSession("omp", OMP_SESSION, OMP_CWD, "2026-10-01T10:00:00.000Z", Path("s.jsonl"), [{"type": "session", "id": OMP_SESSION}, *entries])
         return MessageExtractor().from_omp(session)
 
+    @staticmethod
+    def tool_session() -> list[dict[str, object]]:
+        """An assistant turn with thinking and two tool calls, then their results in omp's toolResult shape."""
+        first = {"type": "toolCall", "id": "call-1", "name": "bash", "arguments": {"command": "ls"}}
+        second = {"type": "toolCall", "id": "call-2", "name": "read", "arguments": {"path": "b.txt"}}
+        return [
+            user("00000001", None, "List the files and read b.txt"),
+            assistant("00000002", "00000001", {"type": "thinking", "thinking": "Check the directory first."}, text("Listing."), first, second, stopReason="toolUse"),
+            omp_entry("message", "00000003", "00000002", message={"role": "toolResult", "toolCallId": "call-1", "toolName": "bash", "content": [text("a.txt")], "isError": False, "timestamp": 1790000000000}),
+            omp_entry("message", "00000004", "00000003", message={"role": "toolResult", "toolCallId": "call-2", "toolName": "read", "content": [text("permission denied")], "isError": True, "timestamp": 1790000000000}),
+        ]
+
+    def test_thinking_and_tool_calls_are_read_with_their_results(self) -> None:
+        messages = self.extract(self.tool_session())
+        self.assertEqual([m.role for m in messages], ["user", "assistant"])
+        assistant_message = messages[1]
+        self.assertEqual(assistant_message.text, "Listing.")
+        self.assertEqual(assistant_message.thinking, "Check the directory first.")
+        self.assertEqual([(c.name, c.arguments) for c in assistant_message.tool_calls], [("bash", {"command": "ls"}), ("read", {"path": "b.txt"})])
+        self.assertEqual([(c.output, c.is_error) for c in assistant_message.tool_calls], [("a.txt", False), ("permission denied", True)])
+
+    def test_thinking_and_tool_calls_follow_the_conversion_options(self) -> None:
+        from session_sdk.options import ConversionOptions, conversion_options
+        with conversion_options(ConversionOptions(include_thinking=False, include_tool_calls=False)):
+            messages = self.extract(self.tool_session())
+        self.assertIsNone(messages[1].thinking)
+        self.assertEqual(messages[1].tool_calls, ())
+        self.assertEqual(messages[1].text, "Listing.")
+
+    def test_tool_only_turn_is_kept(self) -> None:
+        entries = [
+            user("00000001", None, "Run it"),
+            assistant("00000002", "00000001", {"type": "toolCall", "id": "call-9", "name": "bash", "arguments": {"command": "pwd"}}, stopReason="toolUse"),
+        ]
+        messages = self.extract(entries)
+        self.assertEqual([m.role for m in messages], ["user", "assistant"])
+        self.assertEqual(messages[1].tool_calls[0].output, None)
+
     def test_reads_text_on_the_active_branch(self) -> None:
         messages = self.extract(rich_session())
         self.assertEqual(texts(messages), [
@@ -414,6 +452,29 @@ class OmpBuilderTests(unittest.TestCase):
         self.assertEqual(slot["title"], "")
         self.assertNotIn("source", slot)
         self.assertNotIn("title", header)
+
+
+    def test_tool_calls_and_results_use_omp_shapes(self) -> None:
+        call = ToolCall(id="call-1", name="bash", arguments={"command": "ls"}, output="a.txt", is_error=False)
+        messages = [
+            TextMessage("user", "List the files", "2026-06-04T09:15:00.000Z"),
+            TextMessage("assistant", "Listing.", "2026-06-04T09:15:05.000Z", thinking="Check first.", tool_calls=(call,)),
+        ]
+        records = OmpRecordBuilder().build(OMP_SESSION, OMP_CWD, "2026-06-04T09:15:00.000Z", messages)
+        entries = [record for record in records if record.get("type") == "message"]
+        assistant_entry, result_entry = entries[1], entries[2]
+        self.assertEqual(assistant_entry["message"]["content"], [
+            {"type": "thinking", "thinking": "Check first."},
+            {"type": "text", "text": "Listing."},
+            {"type": "toolCall", "id": "call-1", "name": "bash", "arguments": {"command": "ls"}},
+        ])
+        self.assertEqual(assistant_entry["message"]["stopReason"], "toolUse")
+        self.assertEqual(result_entry["parentId"], assistant_entry["id"])
+        self.assertEqual(result_entry["message"]["role"], "toolResult")
+        self.assertEqual((result_entry["message"]["toolCallId"], result_entry["message"]["toolName"], result_entry["message"]["isError"]), ("call-1", "bash", False))
+        self.assertEqual(result_entry["message"]["content"], [{"type": "text", "text": "a.txt"}])
+        ids = [record["id"] for record in records if "id" in record]
+        self.assertEqual(len(ids), len(set(ids)), "entry ids must stay unique with tool results in between")
 
 
 class OmpConversionTests(unittest.TestCase):
