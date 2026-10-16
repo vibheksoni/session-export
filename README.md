@@ -21,7 +21,7 @@ I use a lot of AI coding CLIs Codex Claude Code Pi OpenCode Devin Factory Windsu
 
 [![PyPI](https://img.shields.io/pypi/v/unisessions?logo=pypi&logoColor=white)](https://pypi.org/project/unisessions/)
 [![Python 3.11+](https://img.shields.io/badge/Python-3.11+-blue?logo=python&logoColor=white)](https://www.python.org/)
-[![Tests](https://img.shields.io/badge/Tests-132%20passing-green)]()
+[![Tests](https://img.shields.io/badge/Tests-136%20passing-green)]()
 [![Providers](https://img.shields.io/badge/Providers-11%20(Codex%20%7C%20Pi%20%7C%20OpenCode%20%7C%20Claude%20%7C%20Devin%20%7C%20Factory%20%7C%20Windsurf%20%7C%20Grok%20%7C%20Freebuff%20%7C%20OMP%20%7C%20T3)-purple)]()
 [![Conversions](https://img.shields.io/badge/Conversions-110%20directions-orange)]()
 [![Traces](https://img.shields.io/badge/Trace%20Export-3%20formats-blue)]()
@@ -560,7 +560,7 @@ session-export/
     cli.py                    # argparse, command routing, dry-run/write, conflict resolution, trace export
     mcp_server.py             # FastMCP tools for chat recall/search
   tests/
-    test_*.py                 # 132 tests: conversions, traces, options, update mode, Grok, T3, Windsurf, round trips
+    test_*.py                 # 136 tests: conversions, traces, options, update mode, Grok, T3, Windsurf, round trips
   docs/                       # full API documentation
   examples/                   # 7 tested Python example scripts
   requirements.txt            # tiktoken + cryptography (required), orjson + google-re2 (optional)
@@ -720,7 +720,7 @@ python -m compileall session_sdk unisessions tests
 python -m unittest discover -s tests -v
 ```
 
-132 tests covering conversion shape, compaction extraction and emission, dry-run
+136 tests covering conversion shape, compaction extraction and emission, dry-run
 safety, assistant usage estimation, OpenCode JSON shape, custom session
 directories, path encoding, every provider's extraction and conversion, OMP reads
 and writes (branch selection, title slot, `/clear`), thinking and tool calls across
