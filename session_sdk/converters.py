@@ -48,6 +48,7 @@ from session_sdk.stores import (
     DevinStore,
     FactoryStore,
     FreebuffStore,
+    CommandCodeStore,
     GrokStore,
     OmpStore,
     OpenCodeStore,
@@ -454,6 +455,93 @@ class MessageExtractor:
             provider, _, model_id = model.partition("/")
             return provider or None, model_id or None
         return string_value(record, "provider"), string_value(record, "modelId") or model
+
+    @_shaped
+    def from_commandcode(self, session: NativeSession) -> list[TextMessage]:
+        """Extract text history from a Command Code session, in any file version.
+
+        The store has already turned a version 1 or 2 file into version 3 records, so this reads one format.
+        Only the branch from the root to the last entry is read, which is the conversation the CLI resumes.
+        Assistant thinking and tool calls are kept, and each ``tool_result`` becomes the output of its call.
+        A compaction entry, or a summary user message, becomes a compaction message. Custom messages and
+        branch summaries are contextual, and so are user messages the CLI marks ``isMeta``.
+        """
+        entries = [record for record in session.records if record.get("type") != "session" and isinstance(record.get("id"), str)]
+        messages: list[TextMessage] = []
+        outputs: dict[str, tuple[str, bool]] = {}
+        current_model: str | None = None
+        for record in self._commandcode_branch(entries):
+            rtype = record.get("type")
+            timestamp = string_value(record, "timestamp") or session.timestamp
+            if rtype == "model_change":
+                current_model = string_value(record, "model") or current_model
+            elif rtype == "compaction":
+                summary = string_value(record, "summary") or ""
+                if summary:
+                    messages.append(TextMessage("user", summary, timestamp, is_compaction=True))
+            elif rtype == "branch_summary":
+                text = string_value(record, "summary") or ""
+                if text:
+                    messages.append(TextMessage("user", text, timestamp, is_contextual=True))
+            elif rtype == "custom_message":
+                text = self._content_text(record.get("content"))
+                if text:
+                    messages.append(TextMessage("user", text, timestamp, is_contextual=True))
+            elif rtype == "message":
+                message = as_object(record.get("message"))
+                if message is None:
+                    continue
+                role = string_value(message, "role")
+                content = message.get("content")
+                meta = as_object(message.get("meta")) or {}
+                if role == "user":
+                    for block in as_list(content) or []:
+                        item = as_object(block)
+                        if item is not None and item.get("type") == "tool_result":
+                            outputs[string_value(item, "tool_use_id") or ""] = (self._result_text(item.get("content")), bool(item.get("is_error")))
+                    text = self._content_text(content)
+                    if not text:
+                        continue
+                    if meta.get("isSummary") is True:
+                        messages.append(TextMessage("user", text, timestamp, is_compaction=True))
+                        continue
+                    contextual = meta.get("isMeta") is True or self._is_contextual(text)
+                    messages.append(TextMessage("user", text, timestamp, is_contextual=contextual))
+                elif role == "assistant":
+                    text = self._content_text(content)
+                    thinking = self._block_thinking(content)
+                    tool_calls = self._block_tool_calls(content)
+                    if not (text or thinking or tool_calls):
+                        continue
+                    messages.append(
+                        TextMessage(
+                            "assistant",
+                            text,
+                            timestamp,
+                            model=string_value(message, "model") or string_value(record, "model") or current_model,
+                            thinking=thinking,
+                            tool_calls=tool_calls,
+                        )
+                    )
+        return self._with_outputs(messages, outputs)
+
+    @staticmethod
+    def _commandcode_branch(entries: list[JsonObject]) -> list[JsonObject]:
+        """The entries from the root to the last entry, root first. A parent cycle stops the walk."""
+        by_id = {str(entry["id"]): entry for entry in entries}
+        branch: list[JsonObject] = []
+        visited: set[str] = set()
+        current = entries[-1] if entries else None
+        while current is not None:
+            entry_id = str(current.get("id"))
+            if entry_id in visited:
+                break
+            visited.add(entry_id)
+            branch.append(current)
+            parent = current.get("parentId")
+            current = by_id.get(parent) if isinstance(parent, str) else None
+        branch.reverse()
+        return branch
 
     @_shaped
     def from_opencode(self, session: NativeSession) -> list[TextMessage]:
@@ -1137,6 +1225,7 @@ class MessageExtractor:
             "codex": self.from_codex,
             "pi": self.from_pi,
             "omp": self.from_omp,
+            "commandcode": self.from_commandcode,
             "opencode": self.from_opencode,
             "claude": self.from_claude,
             "devin": self.from_devin,
@@ -1429,7 +1518,7 @@ class PiRecordBuilder:
 _UNIX_EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 
 
-def _omp_time(timestamp: str) -> datetime | None:
+def _iso_time(timestamp: str) -> datetime | None:
     """A source timestamp as an aware UTC datetime, or None when it does not parse. A timestamp
     without an offset is read as UTC."""
     if not timestamp:
@@ -1443,25 +1532,25 @@ def _omp_time(timestamp: str) -> datetime | None:
     return moment.astimezone(UTC)
 
 
-def _omp_iso(moment: datetime) -> str:
+def _iso_string(moment: datetime) -> str:
     """omp's timestamp format, JavaScript's ``toISOString()``: UTC, milliseconds, ``Z``."""
     return moment.isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
-def _omp_epoch_ms(moment: datetime) -> int:
+def _epoch_millis(moment: datetime) -> int:
     return (moment - _UNIX_EPOCH) // timedelta(milliseconds=1)
 
 
-def _omp_session_timestamp(source: NativeSession) -> str:
+def _session_timestamp(source: NativeSession) -> str:
     """The OMP header timestamp for a converted session, which also names its file. Falls back
     to the source file's modification time, so planning twice yields the same destination."""
-    moment = _omp_time(source.timestamp)
+    moment = _iso_time(source.timestamp)
     if moment is None:
         try:
             moment = datetime.fromtimestamp(source.path.stat().st_mtime, UTC)
         except OSError:
             moment = datetime.now(UTC)
-    return _omp_iso(moment)
+    return _iso_string(moment)
 
 
 class OmpRecordBuilder:
@@ -1492,8 +1581,8 @@ class OmpRecordBuilder:
         *,
         source: NativeSession | None = None,
     ) -> list[JsonObject]:
-        session_time = _omp_time(timestamp) or datetime.now(UTC)
-        session_iso = _omp_iso(session_time)
+        session_time = _iso_time(timestamp) or datetime.now(UTC)
+        session_iso = _iso_string(session_time)
         title = self._title(messages)
         header: JsonObject = {"type": "session", "version": 3, "id": session_id, "timestamp": session_iso, "cwd": cwd}
         if title:
@@ -1516,8 +1605,8 @@ class OmpRecordBuilder:
             if message.is_contextual:
                 continue
             entry_id = next_entry_id()
-            moment = _omp_time(message.timestamp) or session_time
-            last_iso = _omp_iso(moment)
+            moment = _iso_time(message.timestamp) or session_time
+            last_iso = _iso_string(moment)
             if message.is_compaction:
                 # firstKeptEntryId naming the compaction itself keeps no earlier entry.
                 records.append({
@@ -1549,7 +1638,7 @@ class OmpRecordBuilder:
                 payload["stopReason"] = "toolUse" if message.tool_calls else "stop"
             else:
                 payload["attribution"] = "user"
-            payload["timestamp"] = _omp_epoch_ms(moment)
+            payload["timestamp"] = _epoch_millis(moment)
             records.append({"type": "message", "id": entry_id, "parentId": parent_id, "timestamp": last_iso, "message": payload})
             context_tokens += estimator.count(message.text)
             parent_id = entry_id
@@ -1567,7 +1656,7 @@ class OmpRecordBuilder:
                         "toolName": call.name,
                         "content": [{"type": "text", "text": call.output if call.output is not None else "(no output recorded)"}],
                         "isError": call.is_error,
-                        "timestamp": _omp_epoch_ms(moment),
+                        "timestamp": _epoch_millis(moment),
                     },
                 })
                 parent_id = result_id
@@ -1610,6 +1699,123 @@ class OmpRecordBuilder:
             "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "total": 0},
         }
 
+
+class CommandCodeRecordBuilder:
+    """Build a Command Code session (version 3, the layout the CLI writes) from a TextMessage stream.
+
+    Records: a ``session`` header, a ``session_info`` entry carrying the title (the first line of the first
+    user message), a ``model_change`` entry when a reply names its model with a provider prefix, then one
+    ``message`` entry per turn, each the child of the one before. An assistant turn holds thinking, text and
+    ``tool_use`` blocks, and the tool results follow it as one user message of ``tool_result`` blocks, as
+    Command Code writes them. A compaction summary becomes a ``compaction`` entry that keeps nothing before it.
+    Contextual messages are dropped, as in every other builder. With ``source``, a final ``custom`` entry
+    records where the session came from. Output is deterministic.
+    """
+
+    def build(
+        self,
+        session_id: str,
+        cwd: str,
+        timestamp: str,
+        messages: list[TextMessage],
+        *,
+        source: NativeSession | None = None,
+    ) -> list[JsonObject]:
+        session_time = _iso_time(timestamp) or datetime.now(UTC)
+        session_iso = _iso_string(session_time)
+        records: list[JsonObject] = [{"type": "session", "version": 3, "id": session_id, "timestamp": session_iso, "cwd": cwd}]
+        counter = 0
+
+        def next_id() -> str:
+            nonlocal counter
+            counter += 1
+            return f"{counter:08x}"
+
+        parent: str | None = None
+        title = self._title(messages)
+        if title:
+            entry_id = next_id()
+            records.append({"type": "session_info", "id": entry_id, "parentId": parent, "timestamp": session_iso, "name": title})
+            parent = entry_id
+        model = next((m.model for m in messages if m.role == "assistant" and m.model and "/" in m.model), None)
+        if model:
+            entry_id = next_id()
+            records.append({"type": "model_change", "id": entry_id, "parentId": parent, "timestamp": session_iso, "model": model})
+            parent = entry_id
+
+        last_iso = session_iso
+        for message in messages:
+            if message.is_contextual:
+                continue
+            moment = _iso_time(message.timestamp) or session_time
+            last_iso = _iso_string(moment)
+            if message.is_compaction:
+                entry_id = next_id()
+                records.append({
+                    "type": "compaction",
+                    "id": entry_id,
+                    "parentId": parent,
+                    "timestamp": last_iso,
+                    "summary": message.text,
+                    "firstKeptEntryId": entry_id,
+                    "tokensBefore": 0,
+                })
+                parent = entry_id
+                continue
+            if message.role == "assistant":
+                content: list[JsonObject] = []
+                if message.thinking:
+                    content.append({"type": "thinking", "thinking": message.thinking, "signature": ""})
+                if message.text:
+                    content.append({"type": "text", "text": message.text})
+                for call in message.tool_calls:
+                    content.append({"type": "tool_use", "id": call.id, "name": call.name, "input": call.arguments})
+                if not content:
+                    continue
+                entry_id = next_id()
+                entry: JsonObject = {"type": "message", "id": entry_id, "parentId": parent, "timestamp": last_iso, "message": {"role": "assistant", "content": content}}
+                if message.model and "/" in message.model:
+                    entry["model"] = message.model
+                records.append(entry)
+                parent = entry_id
+                if message.tool_calls:
+                    results: list[JsonObject] = [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": call.id,
+                            "content": [{"type": "text", "text": call.output if call.output is not None else "(no output recorded)"}],
+                        }
+                        for call in message.tool_calls
+                    ]
+                    entry_id = next_id()
+                    records.append({"type": "message", "id": entry_id, "parentId": parent, "timestamp": last_iso, "message": {"role": "user", "content": results}})
+                    parent = entry_id
+            elif message.text:
+                entry_id = next_id()
+                records.append({"type": "message", "id": entry_id, "parentId": parent, "timestamp": last_iso, "message": {"role": "user", "content": [{"type": "text", "text": message.text}]}})
+                parent = entry_id
+
+        if source is not None:
+            records.append({
+                "type": "custom",
+                "id": next_id(),
+                "parentId": parent,
+                "timestamp": last_iso,
+                "customType": "foreign_session_import",
+                "data": {"source": source.provider, "sourceId": source.session_id, "sourcePath": str(source.path), "sourceCwd": source.cwd},
+            })
+        return records
+
+    @staticmethod
+    def _title(messages: list[TextMessage]) -> str:
+        for message in messages:
+            if message.role != "user" or message.is_contextual or message.is_compaction:
+                continue
+            for line in message.text.splitlines():
+                words = line.split()
+                if words:
+                    return " ".join(words)[:80]
+        return ""
 
 class CodexRecordBuilder:
     def build(
@@ -5483,6 +5689,78 @@ class OmpToFreebuffConverter(_ToFreebuffConverter):
     """OMP session (active branch) to Freebuff Desktop thread."""
 
 
+class CommandCodeToPiConverter(_ToPiConverter):
+    """Command Code session (active branch) to Pi session."""
+
+
+class CommandCodeToCodexConverter(_ToCodexConverter):
+    """Command Code session (active branch) to Codex session."""
+
+
+class CommandCodeToOpenCodeConverter(_ToOpenCodeConverter):
+    """Command Code session (active branch) to OpenCode session."""
+
+
+class CommandCodeToClaudeConverter(_ToClaudeConverter):
+    """Command Code session (active branch) to Claude Code session."""
+
+
+class CommandCodeToDevinConverter(_ToDevinConverter):
+    """Command Code session (active branch) to Devin session."""
+
+
+class CommandCodeToFactoryConverter(_ToFactoryConverter):
+    """Command Code session (active branch) to Factory session."""
+
+
+class CommandCodeToWindsurfConverter(_ToWindsurfConverter):
+    """Command Code session (active branch) to Windsurf session."""
+
+
+class CommandCodeToGrokConverter(_ToGrokConverter):
+    """Command Code session (active branch) to Grok session."""
+
+
+class CommandCodeToFreebuffConverter(_ToFreebuffConverter):
+    """Command Code session (active branch) to Freebuff session."""
+
+
+class ToCommandCodeConverter:
+    """Write a session from any store as a Command Code session (version 3).
+
+    The source is read through ``MessageExtractor.from_session`` and built by ``CommandCodeRecordBuilder``
+    into the project folder for the session's cwd, which is where the CLI looks for it. A source without a
+    cwd goes to the ``root`` folder. A source id that is not a UUID maps to a stable UUID.
+    """
+
+    def __init__(self, source_store: SessionStore, commandcode_store: CommandCodeStore, id_factory: SessionIdFactory) -> None:
+        self._source_store = source_store
+        self._commandcode_store = commandcode_store
+        self._id_factory = id_factory
+        self._extractor = MessageExtractor()
+        self._builder = CommandCodeRecordBuilder()
+
+    def plan(self, session_id: str, *, target_id: str | None = None) -> ConversionPlan:
+        source = self._source_store.load(session_id)
+        timestamp = _session_timestamp(source)
+        resolved_id = target_id or self._id_factory.create(stable_session_uuid(source.session_id))
+        messages = self._extractor.from_session(source)
+        records = self._builder.build(resolved_id, source.cwd, timestamp, messages, source=source)
+        return ConversionPlan(source, self._commandcode_store.destination_path(resolved_id, timestamp, source.cwd), records)
+
+    def has_changes(self, session_id: str) -> bool:
+        try:
+            plan = self.plan(session_id)
+        except FileNotFoundError:
+            return True
+        if not plan.destination.exists():
+            return True
+        return len(plan.records) != _count_jsonl_records(plan.destination)
+
+    def write(self, plan: ConversionPlan, *, overwrite: bool = False) -> None:
+        self._commandcode_store.write(plan.destination, plan.records, overwrite=overwrite)
+
+
 class ToOmpConverter:
     """Write a session from any store as an OMP session.
 
@@ -5507,7 +5785,7 @@ class ToOmpConverter:
 
     def plan(self, session_id: str, *, target_id: str | None = None) -> ConversionPlan:
         source = self._source_store.load(session_id)
-        timestamp = _omp_session_timestamp(source)
+        timestamp = _session_timestamp(source)
         resolved_id = target_id or self._id_factory.create(stable_session_uuid(source.session_id))
         cwd = source.cwd or str(Path.home())
         messages = self._extractor.from_session(source)

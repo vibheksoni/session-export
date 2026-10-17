@@ -1,6 +1,6 @@
 # UniSessions
 
-UniSessions is an SDK-first AI CLI session converter for moving sessions between Codex, Claude Code, Pi, OpenCode, Devin, Factory, Windsurf Cascade, Grok Build, Freebuff Desktop, and OMP (oh-my-pi), reading T3 Code threads too, with trace export for HuggingFace and fine-tuning (tool calls and reasoning included), plus an MCP chat recall server built on top.
+UniSessions is an SDK-first AI CLI session converter for moving sessions between Codex, Claude Code, Pi, OpenCode, Devin, Factory, Windsurf Cascade, Grok Build, Freebuff Desktop, OMP (oh-my-pi), and Command Code, reading T3 Code threads too, with trace export for HuggingFace and fine-tuning (tool calls and reasoning included), plus an MCP chat recall server built on top.
 
 <div align="center">
 
@@ -15,15 +15,15 @@ UniSessions is an SDK-first AI CLI session converter for moving sessions between
 
 ```
 
-**Convert one AI CLI session format into another across Codex, Pi, OpenCode, Claude Code, Devin, Factory, Windsurf Cascade, Grok Build, Freebuff Desktop, and OMP.**
+**Convert one AI CLI session format into another across Codex, Pi, OpenCode, Claude Code, Devin, Factory, Windsurf Cascade, Grok Build, Freebuff Desktop, OMP, and Command Code.**
 
 I use a lot of AI coding CLIs Codex Claude Code Pi OpenCode Devin Factory Windsurf Grok and wanted to move a session from one tool into another without losing the useful conversation history
 
 [![PyPI](https://img.shields.io/pypi/v/unisessions?logo=pypi&logoColor=white)](https://pypi.org/project/unisessions/)
 [![Python 3.11+](https://img.shields.io/badge/Python-3.11+-blue?logo=python&logoColor=white)](https://www.python.org/)
-[![Tests](https://img.shields.io/badge/Tests-136%20passing-green)]()
-[![Providers](https://img.shields.io/badge/Providers-11%20(Codex%20%7C%20Pi%20%7C%20OpenCode%20%7C%20Claude%20%7C%20Devin%20%7C%20Factory%20%7C%20Windsurf%20%7C%20Grok%20%7C%20Freebuff%20%7C%20OMP%20%7C%20T3)-purple)]()
-[![Conversions](https://img.shields.io/badge/Conversions-110%20directions-orange)]()
+[![Tests](https://img.shields.io/badge/Tests-163%20passing-green)]()
+[![Providers](https://img.shields.io/badge/Providers-12%20(Codex%20%7C%20Pi%20%7C%20OpenCode%20%7C%20Claude%20%7C%20Devin%20%7C%20Factory%20%7C%20Windsurf%20%7C%20Grok%20%7C%20Freebuff%20%7C%20OMP%20%7C%20Command%20Code%20%7C%20T3)-purple)]()
+[![Conversions](https://img.shields.io/badge/Conversions-132%20directions-orange)]()
 [![Traces](https://img.shields.io/badge/Trace%20Export-3%20formats-blue)]()
 [![MCP](https://img.shields.io/badge/MCP-FastMCP-teal?logo=fastapi&logoColor=white)]()
 [![License](https://img.shields.io/badge/License-MIT-yellow)]()
@@ -38,7 +38,7 @@ I use a lot of AI coding CLIs Codex Claude Code Pi OpenCode Devin Factory Windsu
 - [Why I built this](#why-i-built-this)
 - [Quick Start](#quick-start)
 - [Supported AI coding agents](#supported-ai-coding-agents)
-- [Conversion directions (110 in total)](#conversion-directions-110-in-total)
+- [Conversion directions (132 in total)](#conversion-directions-132-in-total)
 - [How to list sessions](#how-to-list-sessions)
 - [How to convert sessions](#how-to-convert-sessions)
 - [How to export traces](#how-to-export-traces)
@@ -65,7 +65,7 @@ I also wanted my agent to remember things from my other sessions like if I solve
 
 So this does two things
 
-- Moves your sessions between Codex Pi OpenCode Claude Code Devin Factory Windsurf Cascade Grok Build Freebuff Desktop and OMP in any direction: 110 combinations, counting T3 Code
+- Moves your sessions between Codex Pi OpenCode Claude Code Devin Factory Windsurf Cascade Grok Build Freebuff Desktop, OMP, and Command Code in any direction: 132 combinations, counting T3 Code
 - Exports sessions as traces in HuggingFace STS OpenAI fine-tuning or ShareGPT format for Hub upload or model training
 - Lets your agent search through all your old chat history across all projects and providers so it can recall what you did before and learn from it
 
@@ -87,6 +87,7 @@ python -m unisessions list windsurf
 python -m unisessions list grok
 python -m unisessions list freebuff
 python -m unisessions list omp
+python -m unisessions list commandcode
 python -m unisessions list t3
 ```
 
@@ -110,6 +111,7 @@ python -m unisessions factory-to-pi <session-id> --write
 python -m unisessions windsurf-to-pi <session-id> --write
 python -m unisessions freebuff-to-pi <session-id> --write
 python -m unisessions omp-to-pi <session-id> --write
+python -m unisessions commandcode-to-pi <session-id> --write
 python -m unisessions t3-to-pi <session-id> --write
 python -m unisessions t3-to-codex <session-id> --write
 ```
@@ -146,24 +148,26 @@ python -m unisessions.mcp_server
 | [Grok](https://x.ai) (Grok Build and [grok-cli](https://github.com/superagent-ai/grok-cli)) | `grok` | ACP `updates.jsonl` + `summary.json` per session dir (Grok Build), SQLite `grok.db` (grok-cli) | session directory name, or session id |
 | [Freebuff](https://freebuff.com) (Freebuff Desktop) | `freebuff` | Per-project SQLite `desktop-v2.db` (`threads` + `messages`) + `project.json` | thread id |
 | [OMP](https://github.com/can1357/oh-my-pi) (oh-my-pi) | `omp` | JSONL tree entries in cwd-encoded dirs, with a fixed-width title line | UUID v7 |
+| [Command Code](https://commandcode.ai) | `commandcode` | JSONL under `projects/<cwd slug>/`. Reads all three file versions (v1 Anthropic lines, v2 flat, v3 tree). Writes v3. | UUID |
 | [T3 Code](https://t3.codes) | `t3` (source) and experimental target | SQLite `userdata/statev2.sqlite` (legacy `state.sqlite`). Reads are read-only. | thread id |
 
-## Conversion directions (110 in total)
+## Conversion directions (132 in total)
 
-T3 Code adds 20 directions, 110 in total. Reading T3 is stable: ten `t3-to-<provider>` commands. Writing into T3 is **experimental**: ten `<provider>-to-t3` commands write a thread into a new, empty T3 home, which T3 imports the first time it starts there. The live T3 data directory is never written. See [docs/stores.md](docs/stores.md#writing-into-t3-experimental).
+T3 Code adds 22 directions, 132 in total. Reading T3 is stable: eleven `t3-to-<provider>` commands. Writing into T3 is **experimental**: eleven `<provider>-to-t3` commands write a thread into a new, empty T3 home, which T3 imports the first time it starts there. The live T3 data directory is never written. See [docs/stores.md](docs/stores.md#writing-into-t3-experimental).
 
-| From \ To | Pi | Codex | OpenCode | Claude | Devin | Factory | Windsurf | Grok | Freebuff | OMP |
-|---|---|---|---|---|---|---|---|---|---|---|
-| **Codex** | `codex-to-pi` | -- | `codex-to-opencode` | `codex-to-claude` | `codex-to-devin` | `codex-to-factory` | `codex-to-windsurf` | `codex-to-grok` | `codex-to-freebuff` | `codex-to-omp` |
-| **Pi** | -- | `pi-to-codex` | `pi-to-opencode` | `pi-to-claude` | `pi-to-devin` | `pi-to-factory` | `pi-to-windsurf` | `pi-to-grok` | `pi-to-freebuff` | `pi-to-omp` |
-| **OpenCode** | `opencode-to-pi` | `opencode-to-codex` | -- | `opencode-to-claude` | `opencode-to-devin` | `opencode-to-factory` | `opencode-to-windsurf` | `opencode-to-grok` | `opencode-to-freebuff` | `opencode-to-omp` |
-| **Claude** | `claude-to-pi` | `claude-to-codex` | `claude-to-opencode` | -- | `claude-to-devin` | `claude-to-factory` | `claude-to-windsurf` | `claude-to-grok` | `claude-to-freebuff` | `claude-to-omp` |
-| **Devin** | `devin-to-pi` | `devin-to-codex` | `devin-to-opencode` | `devin-to-claude` | -- | `devin-to-factory` | `devin-to-windsurf` | `devin-to-grok` | `devin-to-freebuff` | `devin-to-omp` |
-| **Factory** | `factory-to-pi` | `factory-to-codex` | `factory-to-opencode` | `factory-to-claude` | `factory-to-devin` | -- | `factory-to-windsurf` | `factory-to-grok` | `factory-to-freebuff` | `factory-to-omp` |
-| **Windsurf** | `windsurf-to-pi` | `windsurf-to-codex` | `windsurf-to-opencode` | `windsurf-to-claude` | `windsurf-to-devin` | `windsurf-to-factory` | -- | `windsurf-to-grok` | `windsurf-to-freebuff` | `windsurf-to-omp` |
-| **Grok** | `grok-to-pi` | `grok-to-codex` | `grok-to-opencode` | `grok-to-claude` | `grok-to-devin` | `grok-to-factory` | `grok-to-windsurf` | -- | `grok-to-freebuff` | `grok-to-omp` |
-| **Freebuff** | `freebuff-to-pi` | `freebuff-to-codex` | `freebuff-to-opencode` | `freebuff-to-claude` | `freebuff-to-devin` | `freebuff-to-factory` | `freebuff-to-windsurf` | `freebuff-to-grok` | -- | `freebuff-to-omp` |
-| **OMP** | `omp-to-pi` | `omp-to-codex` | `omp-to-opencode` | `omp-to-claude` | `omp-to-devin` | `omp-to-factory` | `omp-to-windsurf` | `omp-to-grok` | `omp-to-freebuff` | -- |
+| From \ To | Pi | Codex | OpenCode | Claude | Devin | Factory | Windsurf | Grok | Freebuff | OMP | Command Code |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| **Codex** | `codex-to-pi` | -- | `codex-to-opencode` | `codex-to-claude` | `codex-to-devin` | `codex-to-factory` | `codex-to-windsurf` | `codex-to-grok` | `codex-to-freebuff` | `codex-to-omp` | `codex-to-commandcode` |
+| **Pi** | -- | `pi-to-codex` | `pi-to-opencode` | `pi-to-claude` | `pi-to-devin` | `pi-to-factory` | `pi-to-windsurf` | `pi-to-grok` | `pi-to-freebuff` | `pi-to-omp` | `pi-to-commandcode` |
+| **OpenCode** | `opencode-to-pi` | `opencode-to-codex` | -- | `opencode-to-claude` | `opencode-to-devin` | `opencode-to-factory` | `opencode-to-windsurf` | `opencode-to-grok` | `opencode-to-freebuff` | `opencode-to-omp` | `opencode-to-commandcode` |
+| **Claude** | `claude-to-pi` | `claude-to-codex` | `claude-to-opencode` | -- | `claude-to-devin` | `claude-to-factory` | `claude-to-windsurf` | `claude-to-grok` | `claude-to-freebuff` | `claude-to-omp` | `claude-to-commandcode` |
+| **Devin** | `devin-to-pi` | `devin-to-codex` | `devin-to-opencode` | `devin-to-claude` | -- | `devin-to-factory` | `devin-to-windsurf` | `devin-to-grok` | `devin-to-freebuff` | `devin-to-omp` | `devin-to-commandcode` |
+| **Factory** | `factory-to-pi` | `factory-to-codex` | `factory-to-opencode` | `factory-to-claude` | `factory-to-devin` | -- | `factory-to-windsurf` | `factory-to-grok` | `factory-to-freebuff` | `factory-to-omp` | `factory-to-commandcode` |
+| **Windsurf** | `windsurf-to-pi` | `windsurf-to-codex` | `windsurf-to-opencode` | `windsurf-to-claude` | `windsurf-to-devin` | `windsurf-to-factory` | -- | `windsurf-to-grok` | `windsurf-to-freebuff` | `windsurf-to-omp` | `windsurf-to-commandcode` |
+| **Grok** | `grok-to-pi` | `grok-to-codex` | `grok-to-opencode` | `grok-to-claude` | `grok-to-devin` | `grok-to-factory` | `grok-to-windsurf` | -- | `grok-to-freebuff` | `grok-to-omp` | `grok-to-commandcode` |
+| **Freebuff** | `freebuff-to-pi` | `freebuff-to-codex` | `freebuff-to-opencode` | `freebuff-to-claude` | `freebuff-to-devin` | `freebuff-to-factory` | `freebuff-to-windsurf` | `freebuff-to-grok` | -- | `freebuff-to-omp` | `freebuff-to-commandcode` |
+| **OMP** | `omp-to-pi` | `omp-to-codex` | `omp-to-opencode` | `omp-to-claude` | `omp-to-devin` | `omp-to-factory` | `omp-to-windsurf` | `omp-to-grok` | `omp-to-freebuff` | -- | `omp-to-commandcode` |
+| **Command Code** | `commandcode-to-pi` | `commandcode-to-codex` | `commandcode-to-opencode` | `commandcode-to-claude` | `commandcode-to-devin` | `commandcode-to-factory` | `commandcode-to-windsurf` | `commandcode-to-grok` | `commandcode-to-freebuff` | `commandcode-to-omp` | -- |
 
 ## How to list sessions
 
@@ -178,6 +182,7 @@ python -m unisessions list windsurf
 python -m unisessions list grok
 python -m unisessions list freebuff
 python -m unisessions list omp
+python -m unisessions list commandcode
 ```
 
 ## How to convert sessions
@@ -258,6 +263,7 @@ python -m unisessions windsurf-to-freebuff <session-id> --write
 python -m unisessions freebuff-to-grok <session-id> --write
 python -m unisessions grok-to-freebuff <session-id> --write
 python -m unisessions omp-to-pi <session-id> --write
+python -m unisessions commandcode-to-pi <session-id> --write
 python -m unisessions pi-to-omp <session-id> --write
 python -m unisessions omp-to-codex <session-id> --write
 python -m unisessions codex-to-omp <session-id> --write
@@ -275,6 +281,28 @@ python -m unisessions omp-to-grok <session-id> --write
 python -m unisessions grok-to-omp <session-id> --write
 python -m unisessions omp-to-freebuff <session-id> --write
 python -m unisessions freebuff-to-omp <session-id> --write
+python -m unisessions commandcode-to-pi <session-id> --write
+python -m unisessions pi-to-commandcode <session-id> --write
+python -m unisessions commandcode-to-codex <session-id> --write
+python -m unisessions codex-to-commandcode <session-id> --write
+python -m unisessions commandcode-to-opencode <session-id> --write
+python -m unisessions opencode-to-commandcode <session-id> --write
+python -m unisessions commandcode-to-claude <session-id> --write
+python -m unisessions claude-to-commandcode <session-id> --write
+python -m unisessions commandcode-to-devin <session-id> --write
+python -m unisessions devin-to-commandcode <session-id> --write
+python -m unisessions commandcode-to-factory <session-id> --write
+python -m unisessions factory-to-commandcode <session-id> --write
+python -m unisessions commandcode-to-windsurf <session-id> --write
+python -m unisessions windsurf-to-commandcode <session-id> --write
+python -m unisessions commandcode-to-grok <session-id> --write
+python -m unisessions grok-to-commandcode <session-id> --write
+python -m unisessions commandcode-to-freebuff <session-id> --write
+python -m unisessions freebuff-to-commandcode <session-id> --write
+python -m unisessions commandcode-to-omp <session-id> --write
+python -m unisessions omp-to-commandcode <session-id> --write
+python -m unisessions commandcode-to-t3 <session-id> --write
+python -m unisessions t3-to-commandcode <session-id> --write
 ```
 
 OMP resumes a session on the model its last reply names. If that model is not available, interactive `omp` falls back to your configured model with a warning, but `omp -p` and RPC mode refuse to resume unless you pass `--model`:
@@ -356,7 +384,7 @@ Export all Codex sessions to one or more targets in parallel. Every target liste
 
 ```powershell
 python -m unisessions codex-to-pi-all --write --workers 8
-python -m unisessions export-all --write --targets pi opencode claude devin factory windsurf grok freebuff omp --workers 8
+python -m unisessions export-all --write --targets pi opencode claude devin factory windsurf grok freebuff omp commandcode --workers 8
 ```
 
 ## How to use custom paths
@@ -374,6 +402,7 @@ python -m unisessions --windsurf-session-dir C:\path\to\windsurf\cascade list wi
 python -m unisessions --grok-home C:\path\to\grok --grok-session-dir C:\path\to\grok\sessions list grok
 python -m unisessions --freebuff-home C:\path\to\freebuff --freebuff-session-dir C:\path\to\freebuff\projects list freebuff
 python -m unisessions --omp-agent-home C:\path\to\omp\agent --omp-session-dir C:\path\to\omp\sessions list omp
+python -m unisessions --commandcode-home C:\path\to\commandcode --commandcode-session-dir C:\path\to\commandcode\projects list commandcode
 ```
 
 OpenCode output files use the official import/export JSON shape. Load them with
@@ -432,7 +461,7 @@ Environment knobs: `UNISESSIONS_MCP_TRANSPORT`, `UNISESSIONS_MCP_HOST`,
 
 `search_chats` returns a structured response with `search_metadata` (total_matches, deduplicated, sessions_searched, messages_searched, truncated) and a `results` array ranked by relevance score. Duplicate messages across compaction cycles are collapsed to a single hit with a `duplicate_count` field.
 
-`search_chats` supports provider (`codex`, `pi`, `opencode`, `claude`, `devin`, `factory`, `windsurf`, `grok`, `freebuff`, `omp`, `t3`), cwd,
+`search_chats` supports provider (`codex`, `pi`, `opencode`, `claude`, `devin`, `factory`, `windsurf`, `grok`, `freebuff`, `omp`, `commandcode`, `t3`), cwd,
 session_id, role (`user`, `assistant`), message type (`message`, `compaction`,
 `contextual`), `exclude_keywords` to filter out false positives, `max_per_session`
 (default 5) to prevent one session from flooding results, date range (`after`,
@@ -501,7 +530,7 @@ with open("trace.jsonl", "wb") as f:
 
 ```python
 from session_sdk import (
-    CodexStore, PiStore, OpenCodeStore, ClaudeStore, DevinStore, FactoryStore, WindsurfStore, GrokStore, FreebuffStore, OmpStore,
+    CodexStore, PiStore, OpenCodeStore, ClaudeStore, DevinStore, FactoryStore, WindsurfStore, GrokStore, FreebuffStore, OmpStore, CommandCodeStore,
     SessionSearchEngine, WindowsDefaults,
 )
 
@@ -517,6 +546,7 @@ engine = SessionSearchEngine(
     grok=GrokStore(defaults.grok_home),
     freebuff=FreebuffStore(defaults.freebuff_home),
     omp=OmpStore(defaults.omp_agent_home),
+    commandcode=CommandCodeStore(defaults.commandcode_home),
 )
 
 engine.refresh_index(provider="claude")
@@ -547,7 +577,8 @@ session-export/
     jsonl.py                  # JSONL read/write helpers (orjson when available)
     models.py                 # SessionSummary, TextMessage, NativeSession, ConversionPlan
     paths.py                  # WindowsDefaults, path encoding, SessionIdFactory, timestamps
-    stores.py                 # CodexStore, PiStore, PiDcpStore, OpenCodeStore, ClaudeStore, DevinStore, FactoryStore, WindsurfStore, GrokStore, FreebuffStore, OmpStore, T3Store (read; experimental write)
+    stores.py                 # CodexStore, PiStore, PiDcpStore, OpenCodeStore, ClaudeStore, DevinStore, FactoryStore, WindsurfStore, GrokStore, FreebuffStore, OmpStore, CommandCodeStore, T3Store (read; experimental write)
+    commandcode_format.py     # Command Code file versions 1-3, read as version 3 records
     converters.py             # Extractors, builders, and a converter for every direction
     options.py                # ConversionOptions: carry or leave out thinking and tool calls
     traces.py                 # STS, OpenAI, ShareGPT trace format builders
@@ -560,7 +591,7 @@ session-export/
     cli.py                    # argparse, command routing, dry-run/write, conflict resolution, trace export
     mcp_server.py             # FastMCP tools for chat recall/search
   tests/
-    test_*.py                 # 136 tests: conversions, traces, options, update mode, Grok, T3, Windsurf, round trips
+    test_*.py                 # 163 tests: conversions, traces, options, update mode, Grok, T3, Windsurf, OMP, Command Code, round trips
   docs/                       # full API documentation
   examples/                   # 7 tested Python example scripts
   requirements.txt            # tiktoken + cryptography (required), orjson + google-re2 (optional)
@@ -599,6 +630,7 @@ never the reverse.
 | grok-cli | `$GROK_HOME/grok.db` or `~/.grok/grok.db` |
 | Freebuff Desktop | `$FREEBUFF_CONFIG_DIR/projects` or `~/.config/freebuff-desktop/projects` |
 | OMP | `~/.omp/agent/sessions` (or the agent dir of the active profile, `PI_CODING_AGENT_DIR`, or `$XDG_DATA_HOME/omp`) |
+| Command Code | `~/.commandcode/projects` (one folder per cwd, named by its lowercase slug) |
 | T3 Code | `$T3CODE_HOME/userdata` or `~/.t3/userdata` (`statev2.sqlite`, then legacy `state.sqlite`). Writes need an explicit `--t3-home` |
 
 ## Data fidelity
@@ -625,6 +657,7 @@ can reconstruct context correctly:
 - **Windsurf Cascade**: compaction checkpoints (field 30) become compaction summary messages
 - **Grok Build**: compaction summaries import as `user_message_chunk` envelopes so the conversation stays readable in Grok's TUI
 - **OMP**: `type="compaction"` entry whose `firstKeptEntryId` is its own id, so a resumed session starts from the summary
+- **Command Code**: `compaction` entry whose `firstKeptEntryId` is its own id, so a resumed session starts from the summary
 
 ### How contextual messages are handled
 
@@ -650,16 +683,16 @@ consumers can still inspect these messages.
 
 **Can I convert Claude Code sessions to Pi?**
 
-Yes. Use `python -m unisessions claude-to-pi <session-id> --write`. All 90
+Yes. Use `python -m unisessions claude-to-pi <session-id> --write`. All 110
 conversion directions are supported between Codex, Pi, OpenCode, Claude Code,
-Devin, Factory, Windsurf Cascade, Grok, Freebuff Desktop, and OMP. T3 Code adds 20
-more (110 in total).
+Devin, Factory, Windsurf Cascade, Grok, Freebuff Desktop, OMP, and Command Code.
+T3 Code adds 22 more (132 in total).
 
 **Can I export all my Codex sessions at once?**
 
 Yes. Use `python -m unisessions codex-to-pi-all --write --workers 8` to bulk
 export all Codex sessions to Pi in parallel. You can also export to multiple
-targets at once with `export-all --write --targets pi opencode claude devin factory windsurf grok freebuff omp`.
+targets at once with `export-all --write --targets pi opencode claude devin factory windsurf grok freebuff omp commandcode`.
 
 **Can my AI agent search my old chat history?**
 
@@ -697,8 +730,9 @@ Windsurf Cascade AES-256-GCM encrypted protobuf trajectory files,
 Grok Build ACP `updates.jsonl` + `summary.json` session directories, grok-cli
 `grok.db` databases, Freebuff Desktop per-project SQLite `desktop-v2.db`
 (`threads` + `messages`) databases, OMP JSONL tree entries with a fixed-width
-title line, and T3 Code's SQLite databases. The ten standard formats convert in
-all 90 directions, and T3 Code adds 20 more.
+title line, Command Code `projects/` JSONL files (versions 1 to 3), and T3 Code's
+SQLite databases. The eleven standard formats convert in all 110 directions, and
+T3 Code adds 22 more.
 
 **How fast is bulk export?**
 
@@ -720,7 +754,7 @@ python -m compileall session_sdk unisessions tests
 python -m unittest discover -s tests -v
 ```
 
-136 tests covering conversion shape, compaction extraction and emission, dry-run
+163 tests covering conversion shape, compaction extraction and emission, dry-run
 safety, assistant usage estimation, OpenCode JSON shape, custom session
 directories, path encoding, every provider's extraction and conversion, OMP reads
 and writes (branch selection, title slot, `/clear`), thinking and tool calls across

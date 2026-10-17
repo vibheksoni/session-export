@@ -409,6 +409,61 @@ omp --resume <session-id> --model <provider/model> -p "continue"
 
 Where `{omp_agent_home}` is resolved like omp does: `~/.omp/agent` by default. `PI_CONFIG_DIR` renames `.omp`. `OMP_PROFILE` (or legacy `PI_PROFILE`) selects `~/.omp/profiles/<name>/agent`. `PI_CODING_AGENT_DIR` overrides the agent dir when no profile is active. On Linux and macOS, `$XDG_DATA_HOME/omp` is used when that folder exists (after `omp config init-xdg`).
 
+## CommandCodeStore
+
+Reads and writes Command Code sessions, the coding agent that ships as `command-code` (`cmdc`). Every file version the CLI reads is accepted. Writes always use version 3, the layout the current CLI writes.
+
+```python
+from pathlib import Path
+from session_sdk import CommandCodeStore
+
+store = CommandCodeStore(Path.home() / ".commandcode")
+for summary in store.list():
+    print(summary.session_id, summary.cwd, summary.message_count)
+```
+
+### Command Code Format
+
+A session is `projects/<encoded cwd>/<session-id>.jsonl`. The folder is the cwd lowercased, with each run of other characters as `-` (`C:\Users\win\Desktop\app` becomes `c-users-win-desktop-app`). A session with no cwd goes to `root`.
+
+Three layouts exist on disk. The CLI reads all three and rewrites an old file as version 3 the first time it opens it. The store converts in memory and never changes the source file.
+
+| Version | Layout | How it is read |
+|---|---|---|
+| 3 | A `session` header line (`version: 3`, `id`, `timestamp`, `cwd`), then entries linked by `parentId`. Messages are `{"type": "message", "message": {"role", "content"}}` with Anthropic-style blocks (`text`, `thinking`, `tool_use`, `tool_result`). | Read as written. |
+| 2 | One flat line per message with `metadata.version: 2`, AI SDK style parts (`reasoning`, `tool-call`, `tool-result`), and tool results in `tool` messages. | Converted to version 3 messages. |
+| 1 | Plain `{"role", "content"}` Anthropic lines, with no ids and no metadata. | Converted to version 3 messages, with tool results paired to their calls. |
+
+A file written by a newer Command Code (header `version` above 3) is refused with `CommandCodeFormatError`. `list()` skips it with a warning.
+
+Sidecar files (`.meta.json`, `.checkpoints.jsonl`, `.prompts.jsonl`) sit beside each session and are not sessions. The `model` in `.meta.json` names the model of a version 1 or 2 file's last reply, since those files do not record it.
+
+Version 1 and 2 files have no header, so they carry no cwd. The store takes the cwd from a version 3 file in the same folder. A folder with only old files has no cwd, and its sessions convert with an empty cwd.
+
+### Reading
+
+`MessageExtractor.from_commandcode` reads the branch from the first record to the last entry, which is the conversation the CLI resumes. Thinking and tool calls are kept, and each `tool_result` becomes the output of its call. A `compaction` entry, or a user message flagged `isSummary`, becomes a compaction message. User messages flagged `isMeta`, `custom_message` entries and `branch_summary` entries are contextual.
+
+### Writing
+
+`CommandCodeRecordBuilder` writes the header, a `session_info` entry with the title (the first line of the first user message), a `model_change` entry when a reply names a model with a provider prefix (`provider/model`), then one `message` entry per turn.
+
+- An assistant turn holds `thinking` (with an empty `signature`), `text` and `tool_use` blocks.
+- The tool results follow as one user message of `tool_result` blocks, as the CLI writes them. A call with no output gets `(no output recorded)`.
+- A compaction summary becomes a `compaction` entry whose `firstKeptEntryId` is its own id, so a resumed session starts from the summary.
+- Contextual messages are dropped. A final `custom` entry `foreign_session_import` records the source, which the CLI never sends to a model.
+
+Model names without a provider prefix (for example `claude-opus-4-6` from Claude Code) are left off, so the CLI uses its default model.
+
+### Default Paths
+
+| Platform | Path |
+|---|---|
+| Windows | `%USERPROFILE%\.commandcode\projects` |
+| Linux/macOS | `~/.commandcode/projects` |
+
+The `--commandcode-home` flag replaces `~/.commandcode`. `--commandcode-session-dir` replaces the `projects` folder.
+
 ## Caching Behavior
 
 All `SessionStore` subclasses cache two data structures after the first access:

@@ -14,10 +14,11 @@ try:
 except ImportError:
     _HAS_ORJSON = False
 
+from session_sdk.commandcode_format import CommandCodeFormatError, migrate, parse_record
 from session_sdk.json_types import JsonObject, as_list, as_object, as_str, string_value
 from session_sdk.jsonl import JsonlFile, _dumps
 from session_sdk.models import NativeSession, SessionSummary
-from session_sdk.paths import codex_date_parts, codex_filename_timestamp, decode_grok_cwd_dirname, encode_grok_cwd_dirname, encode_omp_cwd, encode_pi_cwd, epoch_ms_to_iso, pi_filename_timestamp, sanitize_claude_cwd
+from session_sdk.paths import codex_date_parts, codex_filename_timestamp, decode_grok_cwd_dirname, encode_commandcode_cwd, encode_grok_cwd_dirname, encode_omp_cwd, encode_pi_cwd, epoch_ms_to_iso, pi_filename_timestamp, sanitize_claude_cwd
 
 import sqlite3 as _sqlite3
 
@@ -628,6 +629,179 @@ class OmpStore(SessionStore):
         except (OSError, ValueError, json.JSONDecodeError) as exc:
             print(f"warning: skipped unreadable OMP session {path}: {exc}", file=sys.stderr)
             return None
+
+
+class CommandCodeStore(SessionStore):
+    """Filesystem store for Command Code sessions.
+
+    A session is ``projects/<encoded cwd>/<session-id>.jsonl``. The folder is the cwd lowercased, with
+    each run of other characters as ``-``. Sidecar files (``.meta.json``, ``.checkpoints.jsonl``,
+    ``.prompts.jsonl``) sit beside each session and are not sessions. Every file version the CLI reads
+    is accepted; ``commandcode_format.migrate`` turns each into version 3 records in memory. A version 1 or
+    2 file has no cwd of its own, so it takes the cwd of a version 3 file in the same folder.
+    """
+
+    provider_name = "commandcode"
+    _SIDECAR_SUFFIXES = (".checkpoints.jsonl", ".prompts.jsonl")
+
+    def __init__(self, commandcode_home: Path, session_dir: Path | None = None) -> None:
+        self._commandcode_home = commandcode_home
+        self._session_dir = session_dir
+        self._path_cache: list[Path] | None = None
+        self._id_index: dict[str, Path] | None = None
+        self._folder_cwds: dict[Path, str] = {}
+
+    @property
+    def root(self) -> Path:
+        return self._commandcode_home
+
+    def list(self, *, workers: int = 1) -> list[SessionSummary]:
+        paths = self._session_paths()
+        if workers <= 1 or len(paths) <= 1:
+            return [s for path in paths if (s := self._cached(self._safe_summary, path)) is not None]
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=min(workers, len(paths)), thread_name_prefix="commandcode-list") as executor:
+            results = list(executor.map(lambda p: self._cached(self._safe_summary, p), paths))
+        return [s for s in results if s is not None]
+
+    def list_metadata(self, *, workers: int = 1) -> list[SessionSummary]:
+        paths = self._session_paths()
+        if workers <= 1 or len(paths) <= 1:
+            return [s for path in paths if (s := self._cached(self._safe_metadata, path)) is not None]
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=min(workers, len(paths)), thread_name_prefix="commandcode-meta") as executor:
+            results = list(executor.map(lambda p: self._cached(self._safe_metadata, p), paths))
+        return [s for s in results if s is not None]
+
+    def load(self, session_id: str) -> NativeSession:
+        path = self._find_path(session_id)
+        if path is not None:
+            return self._load_file(path)
+        raise FileNotFoundError(f"Command Code session not found: {session_id}")
+
+    def load_path(self, path: Path) -> NativeSession:
+        return self._load_file(path)
+
+    def _find_path(self, session_id: str) -> Path | None:
+        index = self._id_index_cache()
+        if session_id in index:
+            return index[session_id]
+        # A unique prefix of the id also loads the session, as `command-code --session` does.
+        matches = [path for sid, path in index.items() if sid.startswith(session_id)]
+        return matches[0] if len(matches) == 1 else None
+
+    def destination_path(self, session_id: str, timestamp: str, cwd: str) -> Path:
+        return self._active_session_root() / encode_commandcode_cwd(cwd) / f"{session_id}.jsonl"
+
+    def write(self, path: Path, records: list[JsonObject], *, overwrite: bool = False) -> None:
+        JsonlFile(path).write(records, overwrite=overwrite)
+
+    def _session_paths(self) -> list[Path]:
+        if self._path_cache is not None:
+            return self._path_cache
+        root = self._active_session_root()
+        if not root.exists():
+            self._path_cache = []
+            return []
+        paths = sorted(
+            path
+            for path in root.glob("*/*.jsonl")
+            if path.is_file() and not path.name.endswith(self._SIDECAR_SUFFIXES)
+        )
+        self._path_cache = paths
+        return paths
+
+    def _id_index_cache(self) -> dict[str, Path]:
+        if self._id_index is None:
+            self._id_index = {path.stem: path for path in self._session_paths()}
+        return self._id_index
+
+    def _active_session_root(self) -> Path:
+        return self._session_dir or (self._commandcode_home / "projects")
+
+    def _folder_cwd(self, folder: Path) -> str:
+        """The cwd of a version 3 file in this folder, which names the cwd of the folder's older files."""
+        if folder not in self._folder_cwds:
+            cwd = ""
+            for path in sorted(folder.glob("*.jsonl")):
+                if path.name.endswith(self._SIDECAR_SUFFIXES):
+                    continue
+                header = self._first_record(path)
+                if header is not None and header.get("type") == "session" and header.get("version") == 3:
+                    cwd = string_value(header, "cwd") or ""
+                    break
+            self._folder_cwds[folder] = cwd
+        return self._folder_cwds[folder]
+
+    @staticmethod
+    def _first_record(path: Path) -> JsonObject | None:
+        with path.open("rb") as handle:
+            for raw in handle:
+                line = raw.decode("utf-8", errors="replace").strip()
+                if line:
+                    return parse_record(line)
+        return None
+
+    @staticmethod
+    def _model_of(path: Path) -> str | None:
+        meta = path.with_name(f"{path.stem}.meta.json")
+        if not meta.is_file():
+            return None
+        try:
+            value = json.loads(meta.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+        return string_value(value, "model") if isinstance(value, dict) else None
+
+    @staticmethod
+    def _fallback_timestamp(path: Path) -> str:
+        return datetime.fromtimestamp(path.stat().st_mtime, UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+    def _load_file(self, path: Path) -> NativeSession:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        session_id = path.stem
+        cwd = self._folder_cwd(path.parent)
+        fallback = self._fallback_timestamp(path)
+        migrated = migrate(lines, session_id=session_id, cwd=cwd, fallback_timestamp=fallback, model=self._model_of(path))
+        if migrated.corrupted:
+            print(f"warning: skipped {migrated.corrupted} unreadable line(s) in {path}", file=sys.stderr)
+        header = migrated.records[0]
+        return NativeSession(
+            "commandcode",
+            string_value(header, "id") or session_id,
+            string_value(header, "cwd") or cwd,
+            string_value(header, "timestamp") or fallback,
+            path,
+            migrated.records,
+        )
+
+    def _safe_summary(self, path: Path) -> SessionSummary | None:
+        try:
+            session = self._load_file(path)
+        except (OSError, ValueError, CommandCodeFormatError) as exc:
+            print(f"warning: skipped unreadable Command Code session {path}: {exc}", file=sys.stderr)
+            return None
+        message_count = sum(1 for record in session.records if record.get("type") == "message")
+        return SessionSummary("commandcode", session.session_id, session.cwd, session.timestamp, path, message_count)
+
+    def _safe_metadata(self, path: Path) -> SessionSummary | None:
+        """Summary from the first line alone (``message_count`` -1). A version 1 or 2 file has no header,
+        so its cwd comes from its folder and its timestamp from the file's modification time."""
+        try:
+            header = self._first_record(path)
+        except (OSError, ValueError) as exc:
+            print(f"warning: skipped unreadable Command Code session {path}: {exc}", file=sys.stderr)
+            return None
+        if header is not None and header.get("type") == "session" and header.get("version") == 3:
+            return SessionSummary(
+                "commandcode",
+                string_value(header, "id") or path.stem,
+                string_value(header, "cwd") or "",
+                string_value(header, "timestamp") or "",
+                path,
+                -1,
+            )
+        return SessionSummary("commandcode", path.stem, self._folder_cwd(path.parent), self._fallback_timestamp(path), path, -1)
 
 
 class ClaudeStore(SessionStore):

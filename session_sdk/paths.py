@@ -128,6 +128,11 @@ class WindowsDefaults:
         return self._home / ".t3"
 
     @property
+    def commandcode_home(self) -> Path:
+        """Command Code's data directory, ``~/.commandcode``. Sessions live under ``projects/``."""
+        return self._home / ".commandcode"
+
+    @property
     def omp_agent_home(self) -> Path:
         """The directory holding OMP's ``sessions/`` folder, resolved the way omp resolves it.
 
@@ -349,6 +354,15 @@ def encode_omp_cwd(cwd: str, *, home: Path | None = None, temp_root: Path | None
     if relative is not None:
         return _encode_omp_relative("-", relative)
     return _encode_omp_absolute(canonical)
+
+
+_COMMANDCODE_SLUG_RE = re.compile(r"[^a-z0-9]+")
+
+
+def encode_commandcode_cwd(cwd: str) -> str:
+    """Command Code's project folder for a cwd: lowercase, with each run of other characters as ``-``.
+    An absolute Windows path with a drive letter and folders becomes one hyphenated name. An empty cwd is ``root``."""
+    return _COMMANDCODE_SLUG_RE.sub("-", cwd.lower()).strip("-") or "root"
 
 
 def encode_grok_cwd_dirname(cwd: str) -> str:

@@ -5,6 +5,7 @@ from pathlib import Path
 
 from session_sdk.converters import (
     ClaudeRecordBuilder,
+    CommandCodeRecordBuilder,
     CodexRecordBuilder,
     DevinRecordBuilder,
     FactoryRecordBuilder,
@@ -79,6 +80,10 @@ def targets() -> dict[str, tuple[object, object]]:
         records = OmpRecordBuilder().build(SESSION, CWD, TS, conversation())
         return extractor.from_omp(session("omp", records))
 
+    def commandcode():
+        records = CommandCodeRecordBuilder().build(SESSION, CWD, TS, conversation())
+        return extractor.from_commandcode(session("commandcode", records))
+
     def grok():
         records = GrokRecordBuilder().build(SESSION, CWD, TS, conversation())
         return extractor.from_grok(session("grok", records))
@@ -98,6 +103,7 @@ def targets() -> dict[str, tuple[object, object]]:
         "grok": grok,
         "freebuff": freebuff,
         "omp": omp,
+        "commandcode": commandcode,
     }
 
 

@@ -29,6 +29,7 @@ defaults = WindowsDefaults(home=Path("/custom/home"))
 | `grok_home` | `<home>/.grok` | `GROK_HOME` |
 | `freebuff_home` | `<home>/.config/freebuff-desktop` | `FREEBUFF_CONFIG_DIR` |
 | `omp_agent_home` | `<home>/.omp/agent` | `PI_CONFIG_DIR`, `OMP_PROFILE`, `PI_PROFILE`, `PI_CODING_AGENT_DIR`, `XDG_DATA_HOME` |
+| `commandcode_home` | `<home>/.commandcode` | -- (sessions live under `projects/`) |
 | `t3_home` | `<home>/.t3` | `T3CODE_HOME` |
 | `opencode_session_dir` | `<opencode_data_home>/session-export` | -- |
 
@@ -99,6 +100,17 @@ sanitize_claude_cwd("C:\\Projects\\myproject")
 ```
 
 Strips `\\?\` prefix, then replaces every non-alphanumeric character with `-`.
+
+## encode_commandcode_cwd
+
+Encodes a cwd path into Command Code's project folder name. The cwd is lowercased and each run of other characters becomes `-`. An empty cwd is `root`.
+
+```python
+from session_sdk.paths import encode_commandcode_cwd
+
+encode_commandcode_cwd("/home/me/projects/Automate SDK")
+# --> "home-me-projects-automate-sdk"
+```
 
 ## encode_omp_cwd
 

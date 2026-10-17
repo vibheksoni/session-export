@@ -7,6 +7,15 @@ from pathlib import Path
 from uuid import uuid4
 
 from session_sdk.converters import (
+    CommandCodeToPiConverter,
+    CommandCodeToCodexConverter,
+    CommandCodeToOpenCodeConverter,
+    CommandCodeToClaudeConverter,
+    CommandCodeToDevinConverter,
+    CommandCodeToFactoryConverter,
+    CommandCodeToWindsurfConverter,
+    CommandCodeToGrokConverter,
+    CommandCodeToFreebuffConverter,
     ClaudeToCodexConverter,
     ClaudeToDevinConverter,
     ClaudeToFactoryConverter,
@@ -88,6 +97,7 @@ from session_sdk.converters import (
     T3ToOpenCodeConverter,
     T3ToPiConverter,
     T3ToWindsurfConverter,
+    ToCommandCodeConverter,
     ToOmpConverter,
     ToT3Converter,
     WindsurfToClaudeConverter,
@@ -101,7 +111,7 @@ from session_sdk.converters import (
 )
 from session_sdk.models import ConversionPlan, SessionSummary
 from session_sdk.paths import SessionIdFactory, WindowsDefaults
-from session_sdk.stores import T3_PROVIDER_DRIVERS, T3WriteError, destination_exists, ClaudeStore, CodexStore, DevinStore, FactoryStore, FreebuffStore, GrokStore, OmpStore, OpenCodeStore, PiDcpStore, PiStore, T3Store, WindsurfStore
+from session_sdk.stores import T3_PROVIDER_DRIVERS, T3WriteError, destination_exists, ClaudeStore, CodexStore, CommandCodeStore, DevinStore, FactoryStore, FreebuffStore, GrokStore, OmpStore, OpenCodeStore, PiDcpStore, PiStore, T3Store, WindsurfStore
 from session_sdk.options import ConversionOptions, conversion_options
 from session_sdk.traces import TRACE_FORMATS, build_trace
 from session_sdk.converters import MessageExtractor
@@ -170,15 +180,19 @@ class CliApp:
             Path(args.omp_agent_home or defaults.omp_agent_home),
             self._optional_path(args.omp_session_dir),
         )
+        commandcode = CommandCodeStore(
+            Path(args.commandcode_home or defaults.commandcode_home),
+            self._optional_path(args.commandcode_session_dir),
+        )
 
         if args.command == "list":
-            store = {"codex": codex, "pi": pi, "opencode": opencode, "claude": claude, "devin": devin, "factory": factory, "windsurf": windsurf, "grok": grok, "freebuff": freebuff, "t3": t3, "omp": omp}[args.provider]
+            store = {"codex": codex, "pi": pi, "opencode": opencode, "claude": claude, "devin": devin, "factory": factory, "windsurf": windsurf, "grok": grok, "freebuff": freebuff, "t3": t3, "omp": omp, "commandcode": commandcode}[args.provider]
             summaries = store.list(workers=args.workers or 1)
             self._print_summaries(summaries)
             return 0
 
         if args.command == "to-trace":
-            return self._to_trace(args, codex, pi, opencode, claude, devin, factory, windsurf, grok, freebuff, t3, omp)
+            return self._to_trace(args, codex, pi, opencode, claude, devin, factory, windsurf, grok, freebuff, t3, omp, commandcode)
 
         id_factory = SessionIdFactory(preserve_ids=not args.new_id)
         if args.command in ("codex-to-pi", "pi-to-codex", "codex-to-opencode",
@@ -209,14 +223,36 @@ class CliApp:
                             "codex-to-t3", "pi-to-t3", "opencode-to-t3", "claude-to-t3", "devin-to-t3", "factory-to-t3", "windsurf-to-t3", "grok-to-t3", "freebuff-to-t3",
                             "t3-to-pi", "t3-to-codex", "t3-to-opencode", "t3-to-claude", "t3-to-devin", "t3-to-factory", "t3-to-windsurf", "t3-to-grok", "t3-to-freebuff",
                             "omp-to-pi", "omp-to-codex", "omp-to-opencode", "omp-to-claude", "omp-to-devin", "omp-to-factory", "omp-to-windsurf", "omp-to-grok", "omp-to-freebuff", "omp-to-t3",
-                            "pi-to-omp", "codex-to-omp", "opencode-to-omp", "claude-to-omp", "devin-to-omp", "factory-to-omp", "windsurf-to-omp", "grok-to-omp", "freebuff-to-omp", "t3-to-omp"):
-            return self._single_convert(args, codex, pi, dcp, opencode, claude, devin, factory, windsurf, grok, freebuff, t3, omp, id_factory)
+                            "pi-to-omp", "codex-to-omp", "opencode-to-omp", "claude-to-omp", "devin-to-omp", "factory-to-omp", "windsurf-to-omp", "grok-to-omp", "freebuff-to-omp", "t3-to-omp",
+                            "commandcode-to-omp", "omp-to-commandcode",
+                            "commandcode-to-pi",
+                            "pi-to-commandcode",
+                            "commandcode-to-codex",
+                            "codex-to-commandcode",
+                            "commandcode-to-opencode",
+                            "opencode-to-commandcode",
+                            "commandcode-to-claude",
+                            "claude-to-commandcode",
+                            "commandcode-to-devin",
+                            "devin-to-commandcode",
+                            "commandcode-to-factory",
+                            "factory-to-commandcode",
+                            "commandcode-to-windsurf",
+                            "windsurf-to-commandcode",
+                            "commandcode-to-grok",
+                            "grok-to-commandcode",
+                            "commandcode-to-freebuff",
+                            "freebuff-to-commandcode",
+                            "commandcode-to-t3",
+                            "t3-to-commandcode",
+                            ):
+            return self._single_convert(args, codex, pi, dcp, opencode, claude, devin, factory, windsurf, grok, freebuff, t3, omp, commandcode, id_factory)
 
         if args.command == "codex-to-pi-all":
-            return self._bulk_export({"codex": codex, "pi": pi, "pi-dcp": dcp, "opencode": opencode, "claude": claude, "devin": devin, "factory": factory, "windsurf": windsurf, "grok": grok, "freebuff": freebuff, "omp": omp}, id_factory, args, targets=["pi"])
+            return self._bulk_export({"codex": codex, "pi": pi, "pi-dcp": dcp, "opencode": opencode, "claude": claude, "devin": devin, "factory": factory, "windsurf": windsurf, "grok": grok, "freebuff": freebuff, "omp": omp, "commandcode": commandcode}, id_factory, args, targets=["pi"])
 
         if args.command == "export-all":
-            return self._bulk_export({"codex": codex, "pi": pi, "pi-dcp": dcp, "opencode": opencode, "claude": claude, "devin": devin, "factory": factory, "windsurf": windsurf, "grok": grok, "freebuff": freebuff, "omp": omp}, id_factory, args, targets=args.targets)
+            return self._bulk_export({"codex": codex, "pi": pi, "pi-dcp": dcp, "opencode": opencode, "claude": claude, "devin": devin, "factory": factory, "windsurf": windsurf, "grok": grok, "freebuff": freebuff, "omp": omp, "commandcode": commandcode}, id_factory, args, targets=args.targets)
 
         raise ValueError(f"Unsupported command: {args.command}")
 
@@ -245,10 +281,12 @@ class CliApp:
         parser.add_argument("--t3-home", default=None, help="T3 Code home (default: T3CODE_HOME or ~/.t3). Threads are read from <home>/userdata, read-only.")
         parser.add_argument("--omp-agent-home", default=None, help="OMP agent directory holding sessions/ (default: resolved like omp, usually ~/.omp/agent).")
         parser.add_argument("--omp-session-dir", default=None, help="OMP sessions root holding the per-project folders (default: <omp agent home>/sessions).")
+        parser.add_argument("--commandcode-home", default=None, help="Command Code data directory holding projects/ (default: ~/.commandcode).")
+        parser.add_argument("--commandcode-session-dir", default=None, help="Command Code projects root holding the per-project folders (default: <commandcode home>/projects).")
         subparsers = parser.add_subparsers(dest="command", required=True)
 
         list_parser = subparsers.add_parser("list")
-        list_parser.add_argument("provider", choices=("codex", "pi", "opencode", "claude", "devin", "factory", "windsurf", "grok", "freebuff", "t3", "omp"))
+        list_parser.add_argument("provider", choices=("codex", "pi", "opencode", "claude", "devin", "factory", "windsurf", "grok", "freebuff", "t3", "omp", "commandcode"))
         list_parser.add_argument("--workers", type=int, default=None, help="Number of parallel workers for listing (default: 1).")
 
         codex_to_pi = subparsers.add_parser("codex-to-pi")
@@ -591,15 +629,61 @@ class CliApp:
         t3_to_omp = subparsers.add_parser("t3-to-omp")
         CliApp._add_convert_args(t3_to_omp)
 
+        commandcode_to_pi = subparsers.add_parser("commandcode-to-pi")
+        CliApp._add_convert_args(commandcode_to_pi)
+        pi_to_commandcode = subparsers.add_parser("pi-to-commandcode")
+        CliApp._add_convert_args(pi_to_commandcode)
+        commandcode_to_codex = subparsers.add_parser("commandcode-to-codex")
+        CliApp._add_convert_args(commandcode_to_codex)
+        codex_to_commandcode = subparsers.add_parser("codex-to-commandcode")
+        CliApp._add_convert_args(codex_to_commandcode)
+        commandcode_to_opencode = subparsers.add_parser("commandcode-to-opencode")
+        CliApp._add_convert_args(commandcode_to_opencode)
+        opencode_to_commandcode = subparsers.add_parser("opencode-to-commandcode")
+        CliApp._add_convert_args(opencode_to_commandcode)
+        commandcode_to_claude = subparsers.add_parser("commandcode-to-claude")
+        CliApp._add_convert_args(commandcode_to_claude)
+        claude_to_commandcode = subparsers.add_parser("claude-to-commandcode")
+        CliApp._add_convert_args(claude_to_commandcode)
+        commandcode_to_devin = subparsers.add_parser("commandcode-to-devin")
+        CliApp._add_convert_args(commandcode_to_devin)
+        devin_to_commandcode = subparsers.add_parser("devin-to-commandcode")
+        CliApp._add_convert_args(devin_to_commandcode)
+        commandcode_to_factory = subparsers.add_parser("commandcode-to-factory")
+        CliApp._add_convert_args(commandcode_to_factory)
+        factory_to_commandcode = subparsers.add_parser("factory-to-commandcode")
+        CliApp._add_convert_args(factory_to_commandcode)
+        commandcode_to_windsurf = subparsers.add_parser("commandcode-to-windsurf")
+        CliApp._add_convert_args(commandcode_to_windsurf)
+        windsurf_to_commandcode = subparsers.add_parser("windsurf-to-commandcode")
+        CliApp._add_convert_args(windsurf_to_commandcode)
+        commandcode_to_grok = subparsers.add_parser("commandcode-to-grok")
+        CliApp._add_convert_args(commandcode_to_grok)
+        grok_to_commandcode = subparsers.add_parser("grok-to-commandcode")
+        CliApp._add_convert_args(grok_to_commandcode)
+        commandcode_to_freebuff = subparsers.add_parser("commandcode-to-freebuff")
+        CliApp._add_convert_args(commandcode_to_freebuff)
+        freebuff_to_commandcode = subparsers.add_parser("freebuff-to-commandcode")
+        CliApp._add_convert_args(freebuff_to_commandcode)
+        commandcode_to_omp = subparsers.add_parser("commandcode-to-omp")
+        CliApp._add_convert_args(commandcode_to_omp)
+        omp_to_commandcode = subparsers.add_parser("omp-to-commandcode")
+        CliApp._add_convert_args(omp_to_commandcode)
+        commandcode_to_t3 = subparsers.add_parser("commandcode-to-t3")
+        CliApp._add_convert_args(commandcode_to_t3)
+        CliApp._add_t3_target_args(commandcode_to_t3)
+        t3_to_commandcode = subparsers.add_parser("t3-to-commandcode")
+        CliApp._add_convert_args(t3_to_commandcode)
+
         codex_to_pi_all = subparsers.add_parser("codex-to-pi-all")
         CliApp._add_bulk_args(codex_to_pi_all)
 
         export_all = subparsers.add_parser("export-all")
         CliApp._add_bulk_args(export_all)
-        export_all.add_argument("--targets", nargs="+", default=["pi"], choices=("pi", "opencode", "claude", "devin", "factory", "windsurf", "grok", "freebuff", "omp"))
+        export_all.add_argument("--targets", nargs="+", default=["pi"], choices=("pi", "opencode", "claude", "devin", "factory", "windsurf", "grok", "freebuff", "omp", "commandcode"))
 
         to_trace = subparsers.add_parser("to-trace")
-        to_trace.add_argument("provider", choices=("codex", "pi", "opencode", "claude", "devin", "factory", "windsurf", "grok", "freebuff", "t3", "omp"))
+        to_trace.add_argument("provider", choices=("codex", "pi", "opencode", "claude", "devin", "factory", "windsurf", "grok", "freebuff", "t3", "omp", "commandcode"))
         to_trace.add_argument("session_id")
         to_trace.add_argument("--no-thinking", action="store_true", help="Leave reasoning out of the output (default: carried over).")
         to_trace.add_argument("--no-tool-calls", action="store_true", help="Leave tool calls and their outputs out of the output (default: carried over).")
@@ -642,6 +726,7 @@ class CliApp:
             "grok": CodexToGrokConverter,
             "freebuff": CodexToFreebuffConverter,
             "omp": ToOmpConverter,
+            "commandcode": ToCommandCodeConverter,
         }
         return builders[target](codex, stores[target], id_factory)  # type: ignore[call-arg, arg-type]
 
@@ -739,6 +824,7 @@ class CliApp:
         freebuff: FreebuffStore,
         t3: T3Store,
         omp: OmpStore,
+        commandcode: CommandCodeStore,
         id_factory: SessionIdFactory,
     ) -> int:
         converters = {
@@ -852,6 +938,28 @@ class CliApp:
             "grok-to-omp": lambda: ToOmpConverter(grok, omp, id_factory),
             "freebuff-to-omp": lambda: ToOmpConverter(freebuff, omp, id_factory),
             "t3-to-omp": lambda: ToOmpConverter(t3, omp, id_factory),
+            "commandcode-to-pi": lambda: CommandCodeToPiConverter(commandcode, pi, dcp, id_factory),
+            "pi-to-commandcode": lambda: ToCommandCodeConverter(pi, commandcode, id_factory),
+            "commandcode-to-codex": lambda: CommandCodeToCodexConverter(commandcode, codex, id_factory),
+            "codex-to-commandcode": lambda: ToCommandCodeConverter(codex, commandcode, id_factory),
+            "commandcode-to-opencode": lambda: CommandCodeToOpenCodeConverter(commandcode, opencode, id_factory),
+            "opencode-to-commandcode": lambda: ToCommandCodeConverter(opencode, commandcode, id_factory),
+            "commandcode-to-claude": lambda: CommandCodeToClaudeConverter(commandcode, claude, id_factory),
+            "claude-to-commandcode": lambda: ToCommandCodeConverter(claude, commandcode, id_factory),
+            "commandcode-to-devin": lambda: CommandCodeToDevinConverter(commandcode, devin, id_factory),
+            "devin-to-commandcode": lambda: ToCommandCodeConverter(devin, commandcode, id_factory),
+            "commandcode-to-factory": lambda: CommandCodeToFactoryConverter(commandcode, factory, id_factory),
+            "factory-to-commandcode": lambda: ToCommandCodeConverter(factory, commandcode, id_factory),
+            "commandcode-to-windsurf": lambda: CommandCodeToWindsurfConverter(commandcode, windsurf, id_factory),
+            "windsurf-to-commandcode": lambda: ToCommandCodeConverter(windsurf, commandcode, id_factory),
+            "commandcode-to-grok": lambda: CommandCodeToGrokConverter(commandcode, grok, id_factory),
+            "grok-to-commandcode": lambda: ToCommandCodeConverter(grok, commandcode, id_factory),
+            "commandcode-to-freebuff": lambda: CommandCodeToFreebuffConverter(commandcode, freebuff, id_factory),
+            "freebuff-to-commandcode": lambda: ToCommandCodeConverter(freebuff, commandcode, id_factory),
+            "commandcode-to-omp": lambda: ToOmpConverter(commandcode, omp, id_factory),
+            "omp-to-commandcode": lambda: ToCommandCodeConverter(omp, commandcode, id_factory),
+            "commandcode-to-t3": lambda: ToT3Converter(commandcode, t3, id_factory, args.t3_provider),
+            "t3-to-commandcode": lambda: ToCommandCodeConverter(t3, commandcode, id_factory),
         }
         converter = converters[args.command]()
         sid = args.session_id
@@ -904,8 +1012,9 @@ class CliApp:
         freebuff: FreebuffStore,
         t3: T3Store,
         omp: OmpStore,
+        commandcode: CommandCodeStore,
     ) -> int:
-        stores = {"codex": codex, "pi": pi, "opencode": opencode, "claude": claude, "devin": devin, "factory": factory, "windsurf": windsurf, "grok": grok, "freebuff": freebuff, "t3": t3, "omp": omp}
+        stores = {"codex": codex, "pi": pi, "opencode": opencode, "claude": claude, "devin": devin, "factory": factory, "windsurf": windsurf, "grok": grok, "freebuff": freebuff, "t3": t3, "omp": omp, "commandcode": commandcode}
         store = stores[args.provider]
         session = store.load(args.session_id)
         extractor = MessageExtractor()
@@ -921,6 +1030,7 @@ class CliApp:
             "freebuff": extractor.from_freebuff,
             "t3": extractor.from_t3,
             "omp": extractor.from_omp,
+            "commandcode": extractor.from_commandcode,
         }
         messages = extractors[args.provider](session)
         records = build_trace(args.format, session, messages)

@@ -14,7 +14,7 @@ python -m unisessions list <provider> [--workers N]
 
 | Argument | Description |
 |---|---|
-| `provider` | Required. One of `codex`, `pi`, `opencode`, `claude`, `devin`, `factory`, `windsurf`, `grok`, `freebuff`, `omp`, `t3`. |
+| `provider` | Required. One of `codex`, `pi`, `opencode`, `claude`, `devin`, `factory`, `windsurf`, `grok`, `freebuff`, `omp`, `commandcode`, `t3`. |
 | `--workers N` | Parallel listing workers (default: 1). |
 
 Output is tab-separated: provider, session ID, timestamp, message count, cwd, file path.
@@ -139,6 +139,28 @@ python -m unisessions <source>-to-<target> <session-id> [flags]
 | `grok-to-t3` | Grok Build | T3 Code (experimental) |
 | `freebuff-to-t3` | Freebuff Desktop | T3 Code (experimental) |
 | `omp-to-t3` | OMP | T3 Code (experimental) |
+| `commandcode-to-pi` | Command Code | Pi |
+| `pi-to-commandcode` | Pi | Command Code |
+| `commandcode-to-codex` | Command Code | Codex |
+| `codex-to-commandcode` | Codex | Command Code |
+| `commandcode-to-opencode` | Command Code | OpenCode |
+| `opencode-to-commandcode` | OpenCode | Command Code |
+| `commandcode-to-claude` | Command Code | Claude Code |
+| `claude-to-commandcode` | Claude Code | Command Code |
+| `commandcode-to-devin` | Command Code | Devin |
+| `devin-to-commandcode` | Devin | Command Code |
+| `commandcode-to-factory` | Command Code | Factory |
+| `factory-to-commandcode` | Factory | Command Code |
+| `commandcode-to-windsurf` | Command Code | Windsurf |
+| `windsurf-to-commandcode` | Windsurf | Command Code |
+| `commandcode-to-grok` | Command Code | Grok Build |
+| `grok-to-commandcode` | Grok Build | Command Code |
+| `commandcode-to-freebuff` | Command Code | Freebuff Desktop |
+| `freebuff-to-commandcode` | Freebuff Desktop | Command Code |
+| `commandcode-to-omp` | Command Code | OMP |
+| `omp-to-commandcode` | OMP | Command Code |
+| `commandcode-to-t3` | Command Code | T3 Code (experimental) |
+| `t3-to-commandcode` | T3 Code | Command Code |
 
 #### Flags
 
@@ -165,12 +187,12 @@ python -m unisessions codex-to-pi-all [--write] [--workers N] [--on-conflict MOD
 Bulk export all Codex sessions to one or more targets.
 
 ```bash
-python -m unisessions export-all --targets pi opencode claude devin factory windsurf grok freebuff omp [--write] [--workers N] [--on-conflict MODE]
+python -m unisessions export-all --targets pi opencode claude devin factory windsurf grok freebuff omp commandcode [--write] [--workers N] [--on-conflict MODE]
 ```
 
 | Flag | Description |
 |---|---|
-| `--targets {pi,opencode,claude,devin,factory,windsurf,grok,freebuff,omp} [...]` | Target formats. Default: `pi`. |
+| `--targets {pi,opencode,claude,devin,factory,windsurf,grok,freebuff,omp,commandcode} [...]` | Target formats. Default: `pi`. |
 | `--write` | Write converted sessions. Without this, prints a dry-run summary. |
 | `--workers N` | Parallel workers (default: 8). |
 | `--overwrite` | Alias for `--on-conflict overwrite`. |
@@ -187,7 +209,7 @@ python -m unisessions to-trace <provider> <session-id> --format <format> [--writ
 
 | Argument | Description |
 |---|---|
-| `provider` | Source provider: `codex`, `pi`, `opencode`, `claude`, `devin`, `factory`, `windsurf`, `grok`, `freebuff`, `omp`, `t3`. |
+| `provider` | Source provider: `codex`, `pi`, `opencode`, `claude`, `devin`, `factory`, `windsurf`, `grok`, `freebuff`, `omp`, `commandcode`, `t3`. |
 | `session_id` | Session ID to export. |
 | `--format` | Trace format: `sts` (default), `openai`, `sharegpt`. |
 | `--output`, `-o` | Output file path (required with `--write`). |
@@ -239,6 +261,8 @@ All commands accept these flags to override system default paths:
 | `--freebuff-session-dir` | `<freebuff-home>/projects` | Root containing Freebuff project directories (each with `desktop-v2.db`). |
 | `--omp-agent-home` | `<home>/.omp/agent` (see [Paths](paths.md)) | OMP agent dir holding `sessions/`. |
 | `--omp-session-dir` | `<omp-agent-home>/sessions` | OMP sessions root holding the per-project folders. |
+| `--commandcode-home` | `<home>/.commandcode` (see [Paths](paths.md)) | Command Code data dir holding `projects/`. |
+| `--commandcode-session-dir` | `<commandcode-home>/projects` | Command Code projects root holding the per-project folders. |
 
 When a session directory override is provided, the store scans that directory directly instead of the tool's default location. This is useful for testing, custom installations, or working with exported session archives.
 
