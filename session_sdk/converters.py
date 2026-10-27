@@ -607,12 +607,62 @@ class MessageExtractor:
             )
         return tuple(calls)
 
+    @staticmethod
+    def _claude_branch(records: list[JsonObject]) -> list[JsonObject]:
+        """The records on the branch Claude Code resumes, in file order.
+
+        A rewind or a retry leaves the abandoned branch in the same file. The leaf is the ``leafUuid`` of the
+        last ``last-prompt`` record that points at a record in the file, or else the last user or assistant
+        record. The walk follows ``parentUuid``; a compaction boundary has no parent, so it continues from its
+        ``logicalParentUuid``. Records without a uuid (metadata) are kept.
+        """
+        by_uuid = {str(record["uuid"]): record for record in records if isinstance(record.get("uuid"), str)}
+        if not by_uuid:
+            return records
+        position = {str(record["uuid"]): index for index, record in enumerate(records) if isinstance(record.get("uuid"), str)}
+        current = next(
+            (by_uuid[leaf] for record in reversed(records) if record.get("type") == "last-prompt"
+             for leaf in [record.get("leafUuid")] if isinstance(leaf, str) and leaf in by_uuid),
+            None,
+        )
+        if current is None:
+            current = next(
+                (record for record in reversed(records) if record.get("type") in ("user", "assistant") and isinstance(record.get("uuid"), str)),
+                None,
+            )
+        on_branch: set[str] = set()
+        while current is not None:
+            uuid = str(current["uuid"])
+            if uuid in on_branch:
+                break
+            on_branch.add(uuid)
+            parent = current.get("parentUuid") or current.get("logicalParentUuid")
+            if not isinstance(parent, str) or parent not in by_uuid:
+                break
+            if position[parent] < position[uuid]:
+                current = by_uuid[parent]
+                continue
+            # The file is append-only, so a parent written after its child is a broken link. Claude
+            # Code writes some: a compaction boundary's logical parent can be an attachment whose
+            # parent is a later message, which looped the walk and hid everything before it. Step to
+            # the previous record in the file instead.
+            current = next(
+                (records[index] for index in range(position[uuid] - 1, -1, -1) if isinstance(records[index].get("uuid"), str)),
+                None,
+            )
+        return [record for record in records if not isinstance(record.get("uuid"), str) or str(record["uuid"]) in on_branch]
+
     @_shaped
     def from_claude(self, session: NativeSession) -> list[TextMessage]:
         messages: list[TextMessage] = []
+        # A parallel tool call's result can sit on a sibling line off the resumed branch, so results come from every record.
         outputs: dict[str, tuple[str, bool]] = {}
-        last_message_id: str | None = None
         for record in session.records:
+            for block in as_list((as_object(record.get("message")) or {}).get("content")) or []:
+                if isinstance(block, dict) and block.get("type") == "tool_result":
+                    outputs[str(block.get("tool_use_id") or "")] = (self._result_text(block.get("content")), block.get("is_error") is True)
+        last_message_id: str | None = None
+        for record in self._claude_branch(session.records):
             rtype = record.get("type")
             if rtype == "system" and record.get("subtype") == "compact_boundary":
                 summary = string_value(record, "content") or ""
@@ -629,9 +679,6 @@ class MessageExtractor:
             if role not in ("user", "assistant"):
                 continue
             content = message.get("content")
-            for block in as_list(content) or []:
-                if isinstance(block, dict) and block.get("type") == "tool_result":
-                    outputs[str(block.get("tool_use_id") or "")] = (self._result_text(block.get("content")), block.get("is_error") is True)
             text = self._content_text(content)
             thinking = self._block_thinking(content)
             tool_calls = self._block_tool_calls(content)

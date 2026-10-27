@@ -585,6 +585,28 @@ class ClaudeTests(unittest.TestCase):
             self.assertGreater(len(plan.records), 4)
             self.assertEqual(plan.records[0].get("type"), "session")
 
+    def test_claude_extraction_skips_abandoned_branch(self) -> None:
+        session_id = "aaaaaaaa-bbbb-cccc-dddd-ffffffffffff"
+
+        def line(uuid: str, parent: str | None, role: str, text: str) -> str:
+            parent_json = "null" if parent is None else f'"{parent}"'
+            return (
+                '{"parentUuid":' + parent_json + ',"type":"' + role + '","message":{"role":"' + role
+                + '","content":"' + text + '"},"uuid":"' + uuid + '","timestamp":"2026-05-23T03:12:51.338Z","sessionId":"'
+                + session_id + '"}'
+            )
+
+        records = [
+            line("u1", None, "user", "first question"),
+            line("a1", "u1", "assistant", "abandoned reply"),
+            line("u2", "u1", "user", "resumed question"),
+            line("a2", "u2", "assistant", "resumed reply"),
+            '{"type":"last-prompt","lastPrompt":"resumed question","leafUuid":"a2","sessionId":"' + session_id + '"}',
+        ]
+        session = NativeSession("claude", session_id, "C:\\Projects\\test", "2026-05-23T03:12:51.338Z", Path("unused.jsonl"), [json.loads(item) for item in records])
+        texts = [message.text for message in MessageExtractor().from_claude(session)]
+        self.assertEqual(texts, ["first question", "resumed question", "resumed reply"])
+
 
 class SearchTests(unittest.TestCase):
     def test_list_chats_filters_by_cwd(self) -> None:
