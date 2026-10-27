@@ -16,7 +16,7 @@ except ImportError:
 
 from session_sdk.commandcode_format import CommandCodeFormatError, migrate, parse_record
 from session_sdk.json_types import JsonObject, as_list, as_object, as_str, string_value
-from session_sdk.jsonl import JsonlFile, _dumps
+from session_sdk.jsonl import JsonlFile, _dumps, _loads
 from session_sdk.models import NativeSession, SessionSummary
 from session_sdk.paths import codex_date_parts, codex_filename_timestamp, decode_grok_cwd_dirname, encode_commandcode_cwd, encode_grok_cwd_dirname, encode_omp_cwd, encode_pi_cwd, epoch_ms_to_iso, pi_filename_timestamp, sanitize_claude_cwd
 
@@ -24,11 +24,7 @@ import sqlite3 as _sqlite3
 
 
 def _json_loads(data: str | bytes) -> object:
-    if _HAS_ORJSON:
-        if isinstance(data, str):
-            data = data.encode("utf-8")
-        return orjson.loads(data)
-    return json.loads(data)
+    return _loads(data)
 
 
 class SessionStore:
@@ -1052,10 +1048,7 @@ class DevinStore(SessionStore):
         return rows.get(session_id)
 
     def _load_file(self, path: Path) -> NativeSession:
-        if _HAS_ORJSON:
-            data = orjson.loads(path.read_bytes())
-        else:
-            data = json.loads(path.read_text(encoding="utf-8"))
+        data = _json_loads(path.read_bytes())
         transcript = as_object(data)
         if transcript is None:
             raise ValueError(f"{path} is not a JSON object")
@@ -1082,10 +1075,7 @@ class DevinStore(SessionStore):
 
     def _safe_summary(self, path: Path) -> SessionSummary | None:
         try:
-            if _HAS_ORJSON:
-                data = orjson.loads(path.read_bytes())
-            else:
-                data = json.loads(path.read_text(encoding="utf-8"))
+            data = _json_loads(path.read_bytes())
             transcript = as_object(data)
             if transcript is None:
                 return None
@@ -1117,10 +1107,7 @@ class DevinStore(SessionStore):
     @staticmethod
     def _count_transcript_messages(path: Path) -> int:
         try:
-            if _HAS_ORJSON:
-                data = orjson.loads(path.read_bytes())
-            else:
-                data = json.loads(path.read_text(encoding="utf-8"))
+            data = _json_loads(path.read_bytes())
             transcript = as_object(data)
             if transcript is None:
                 return 0
@@ -2296,10 +2283,7 @@ class OpenCodeStore(SessionStore):
         return index
 
     def _load_file(self, path: Path) -> NativeSession:
-        if _HAS_ORJSON:
-            value = orjson.loads(path.read_bytes())
-        else:
-            value = json.loads(path.read_text(encoding="utf-8"))
+        value = _json_loads(path.read_bytes())
         export = as_object(value)
         if export is None:
             raise ValueError(f"{path} is not a JSON object")
@@ -2320,10 +2304,7 @@ class OpenCodeStore(SessionStore):
 
     def _safe_summary(self, path: Path) -> SessionSummary | None:
         try:
-            if _HAS_ORJSON:
-                value = orjson.loads(path.read_bytes())
-            else:
-                value = json.loads(path.read_text(encoding="utf-8"))
+            value = _json_loads(path.read_bytes())
             export = as_object(value)
             if export is None:
                 return None

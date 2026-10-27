@@ -14,10 +14,32 @@ except ImportError:
     _HAS_ORJSON = False
 
 
-def _loads(data: bytes) -> object:
+def _loads(data: bytes | str) -> object:
     if _HAS_ORJSON:
-        return orjson.loads(data)
-    return json.loads(data)
+        try:
+            return orjson.loads(data)
+        except orjson.JSONDecodeError:
+            # orjson refuses a lone UTF-16 surrogate escape (half an emoji, which
+            # some agents write when they cut text mid-character). One such line
+            # used to make a whole session unreadable. The standard parser takes it.
+            pass
+    return _without_lone_surrogates(json.loads(data))
+
+
+def _without_lone_surrogates(value: object) -> object:
+    """Replace unpaired surrogates with U+FFFD so the text encodes as UTF-8
+    again (SQLite, orjson.dumps, and file writes all refuse them)."""
+    if isinstance(value, str):
+        try:
+            value.encode("utf-8")
+            return value
+        except UnicodeEncodeError:
+            return value.encode("utf-16", "surrogatepass").decode("utf-16", "replace")
+    if isinstance(value, dict):
+        return {_without_lone_surrogates(k): _without_lone_surrogates(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_without_lone_surrogates(item) for item in value]
+    return value
 
 
 def _dumps(obj: JsonObject) -> bytes:
